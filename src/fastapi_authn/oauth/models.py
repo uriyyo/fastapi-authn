@@ -35,6 +35,7 @@ __all__ = [
     "RefreshToken",
     "Scopes",
     "Subject",
+    "Timestamp",
     "TokenClaims",
     "TokenEndpointAuthMethod",
     "TokenVerifier",
@@ -68,6 +69,10 @@ def _text(value: object) -> object:
     return str(value) if isinstance(value, int | float) and not isinstance(value, bool) else value
 
 
+def _whole_seconds(value: object) -> object:
+    return int(value) if isinstance(value, float) else value
+
+
 def _titled(value: object) -> object:
     return value.title() if isinstance(value, str) else value
 
@@ -92,6 +97,8 @@ type OneOrMany[T] = Annotated[list[T], BeforeValidator(_listed)]
 type NonEmpty[T] = Annotated[list[T], Field(min_length=1)]
 # A `sub` claim: never empty, and a number is taken as text.
 type Subject = Annotated[str, BeforeValidator(_text), Field(min_length=1)]
+# A NumericDate claim (RFC 7519 §2): seconds, which some issuers write with a fraction.
+type Timestamp = Annotated[int, BeforeValidator(_whole_seconds)]
 # RFC 6750 §4 spells it `Bearer`; servers answer `bearer` too.
 type BearerTokenType = Annotated[Literal["Bearer"], BeforeValidator(_titled)]
 
@@ -107,7 +114,7 @@ class TokenClaims(BaseModel):
     iss: str | None = None
     sub: Subject | None = None
     aud: OneOrMany[str] = Field(default_factory=list)
-    exp: int | None = None
+    exp: Timestamp | None = None
     client_id: str | None = None
     azp: str | None = None
     scope: Scopes = Field(default_factory=list)

@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import copy
 import inspect
-from collections.abc import Awaitable, Callable, Iterator, Sequence
-from dataclasses import field
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import field, replace
 from functools import wraps
 from typing import Annotated, Any, Concatenate, Final, Generic, Protocol, TypeAlias, cast
 
-from fastapi import Depends, HTTPException, Request, Security, status
+from fastapi import HTTPException, Request, Security, status
 from fastapi.dependencies.models import Dependant
 from fastapi.dependencies.utils import get_dependant
 from fastapi.openapi.models import APIKey, HTTPBase, OAuth2, OpenIdConnect
 from fastapi.security.base import SecurityBase
-from fastapi_injected import MakeDataclass, bind_deps
+from fastapi_injected import InjectScope, MakeDataclass, bind_deps, init_inject_scope, resolve
 from starlette.authentication import BaseUser
 from typing_extensions import ParamSpec, TypeVar
 
@@ -55,7 +56,8 @@ class SecurityScheme(Protocol[_TCredential_co]):
     async def __call__(self, request: Request) -> _TCredential_co | None: ...
 
 
-ACTOR_PARAMETER: Final = "actor_{index}"
+CREDENTIAL_PARAMETER: Final = "credential_{index}"
+SCHEME_PARAMETER: Final = "scheme_{index}_{position}"
 WWW_AUTHENTICATE: Final = "WWW-Authenticate"
 
 
@@ -67,8 +69,9 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
     `Security(auth)` on a router, `DepFactory[Actor, auth]` in deps, and OpenAPI lists every scheme in it as
     an alternative. It only authenticates; what the actor may do is for the application to decide over it.
 
-    FastAPI resolves every authenticator on every request, so two schemes reading the same header both
-    verify a credential they are sent; register the cheaper one first.
+    Authenticators run lazily, in order, until one answers: FastAPI only extracts the credentials up front,
+    which is what puts the schemes in OpenAPI; verifying happens one authenticator at a time, and one
+    registered through `scheme()` is skipped outright when its credential was not sent.
     """
 
     # Answers a request without any credential; without one, a 401 whose `WWW-Authenticate` names the
@@ -78,6 +81,8 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
 
     auto_error: bool = True
     authenticators: list[Authenticator[_TActor]] = field(default_factory=list)
+    # The `Security(...)` dependency extracting the credential of an authenticator registered through `scheme()`.
+    credentials: dict[Authenticator[_TActor], Any] = field(default_factory=dict, repr=False)
     _optional: AuthChain[_TActor] | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -127,36 +132,41 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
 
             # The first parameter is the scheme's; the rest keep resolving as the function declared them.
             dependency: Any = Security(cast("Callable[..., Any]", scheme), scopes=scopes)
-            return self.authenticator(bind_deps(authenticate, dependency))
+            bound = bind_deps(authenticate, dependency)
+            self.credentials[bound] = dependency
+            return self.authenticator(bound)
 
         return register
 
     def _rebuild_signature(self) -> None:
-        # One sub-dependency per authenticator, so FastAPI resolves them all and the chain only picks.
-        parameters = [
-            inspect.Parameter("request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request),
-            *(
-                inspect.Parameter(
-                    ACTOR_PARAMETER.format(index=index),
-                    inspect.Parameter.KEYWORD_ONLY,
-                    annotation=Annotated[Any, Depends(authenticator)],
+        # Only the credentials are sub-dependencies: cheap to extract, and what OpenAPI lists. For an
+        # authenticator registered through `scheme()` its own is read here, to skip it when nothing was sent;
+        # a plain one has whatever schemes it declares extracted ahead, so they are documented too.
+        parameters = [inspect.Parameter("request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request)]
+
+        for index, authenticator in enumerate(self.authenticators):
+            if (dependency := self.credentials.get(authenticator)) is not None:
+                parameters.append(
+                    inspect.Parameter(
+                        CREDENTIAL_PARAMETER.format(index=index),
+                        inspect.Parameter.KEYWORD_ONLY,
+                        annotation=Annotated[Any | None, dependency],
+                    )
                 )
-                for index, authenticator in enumerate(self.authenticators)
-            ),
-        ]
+                continue
+
+            for position, scheme in enumerate(security_dependencies_of(authenticator)):
+                parameters.append(
+                    inspect.Parameter(
+                        SCHEME_PARAMETER.format(index=index, position=position),
+                        inspect.Parameter.KEYWORD_ONLY,
+                        annotation=Annotated[Any, scheme],
+                    )
+                )
 
         self.__signature__ = inspect.Signature(parameters, return_annotation=Any | None)
 
-    async def __call__(self, request: Request, **actors: Any) -> _TActor | None:
-        if (actor := self.resolved_actor(request, actors)) is not None:
-            return actor
-
-        if not self.auto_error:
-            return None
-
-        raise self.unauthenticated()
-
-    def resolved_actor(self, request: Request, actors: dict[str, Any]) -> _TActor | None:
+    async def __call__(self, request: Request, **extracted: Any) -> _TActor | None:
         # An `AuthenticationMiddleware` with `ChainBackend` may already have decided.
         match request.scope.get("user"):
             case ActorUser(actor=actor):
@@ -164,11 +174,21 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
             case _:
                 pass
 
-        for index in range(len(self.authenticators)):
-            if (actor := actors.get(ACTOR_PARAMETER.format(index=index))) is not None:
-                return cast("_TActor", actor)
+        async with inject_scope_of(request):
+            for index, authenticator in enumerate(self.authenticators):
+                credential = extracted.get(CREDENTIAL_PARAMETER.format(index=index))
 
-        return None
+                if authenticator in self.credentials and credential is None:
+                    continue
+
+                # `resolve` sees the authenticator's signature, not what it produces.
+                if (actor := cast("_TActor | None", await resolve(authenticator))) is not None:
+                    return actor
+
+        if not self.auto_error:
+            return None
+
+        raise self.unauthenticated()
 
     @property
     def schemes(self) -> list[SecurityBase]:
@@ -210,10 +230,7 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
             return self
 
         if self._optional is None:
-            self._optional = cast(
-                "AuthChain[_TActor]",
-                AuthChain(challenge=self.challenge, auto_error=False, authenticators=self.authenticators),
-            )
+            self._optional = replace(self, auto_error=False)
 
         return self._optional
 
@@ -241,6 +258,24 @@ class ActorUser(BaseUser, Generic[_TActor]):
     @property
     def identity(self) -> str:
         return self.display_name
+
+
+@asynccontextmanager
+async def inject_scope_of(request: Request) -> AsyncGenerator[None]:
+    if (current := InjectScope.current()) is not None and current.bound:
+        yield
+        return
+
+    async with asynccontextmanager(init_inject_scope)(request):
+        yield
+
+
+def security_dependencies_of(call: Callable[..., Any]) -> list[Any]:
+    return [
+        Security(dependant.call, scopes=dependant.own_oauth_scopes)
+        for dependant in walk(get_dependant(path="", call=call))
+        if isinstance(dependant.call, SecurityBase)
+    ]
 
 
 def walk(dependant: Dependant) -> Iterator[Dependant]:

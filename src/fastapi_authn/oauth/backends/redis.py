@@ -33,6 +33,12 @@ class RedisStorage:
     async def set(self, namespace: str, key: str, value: dict[str, Any], *, ttl: timedelta | None = None) -> None:
         # In milliseconds: `ex` rounds a short TTL down to no expiry at all.
         px = int(ttl.total_seconds() * 1_000) if ttl is not None else None
+
+        # Redis refuses an expiry in the past; a record that expired already is simply not there.
+        if px is not None and px <= 0:
+            await self.delete(namespace, key)
+            return
+
         await self.client.set(self.key(namespace, key), to_json(value), px=px)
 
     async def delete(self, namespace: str, key: str) -> None:

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import anyio.to_thread
+from pydantic import ValidationError
 
 from fastapi_authn.exceptions import MissingExtra, UserError
 from fastapi_authn.oauth.models import SCOPES, AccessToken, TokenClaims
@@ -77,7 +78,11 @@ class JWTVerifier:
 
     def access_token(self, token: str, claims: dict[str, Any]) -> AccessToken | None:
         """The token for verified claims; `None` refuses them. Override to check what `jwt.decode` does not."""
-        standard = TokenClaims.model_validate(claims)
+        try:
+            standard = TokenClaims.model_validate(claims)
+        except ValidationError:
+            return None
+
         client_id = next((str(claims[claim]) for claim in self.client_id_claims if claims.get(claim) is not None), None)
 
         return AccessToken(

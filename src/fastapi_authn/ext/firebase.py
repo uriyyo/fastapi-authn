@@ -10,7 +10,7 @@ import anyio.to_thread
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from fastapi_authn.exceptions import MissingExtra
-from fastapi_authn.oauth.models import AccessToken, Subject
+from fastapi_authn.oauth.models import AccessToken, Subject, Timestamp
 from fastapi_authn.oauth.verifiers.jwt import JWTVerifier
 
 try:
@@ -36,7 +36,7 @@ class FirebaseClaims(BaseModel):
     """What Firebase guarantees beyond the registered claims; `sub` is the user's uid and never empty."""
 
     sub: Subject
-    exp: int | None = None
+    exp: Timestamp | None = None
     auth_time: float | None = None
 
 
