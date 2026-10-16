@@ -14,21 +14,20 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi_injected import inject
-from mcp.server.auth.provider import (
-    AccessToken,
-    AuthorizationCode,
-    AuthorizationParams,
-    AuthorizeError,
-    OAuthAuthorizationServerProvider,
-    RefreshToken,
-    TokenError,
-    construct_redirect_uri,
-)
-from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, BaseModel
 
 from fastapi_authn._lifespan import lifespan_of
 from fastapi_authn.exceptions import UserError
+from fastapi_authn.oauth.errors import AuthorizeError, TokenError
+from fastapi_authn.oauth.models import (
+    AccessToken,
+    AuthorizationCode,
+    AuthorizationParams,
+    ClientInformation,
+    OAuthToken,
+    RefreshToken,
+    construct_redirect_uri,
+)
 from fastapi_authn.oauth.resource import as_http_url
 from fastapi_authn.oauth.types import AuthenticationResult, Record
 
@@ -41,12 +40,23 @@ if TYPE_CHECKING:
 
 __all__ = [
     "StoredProvider",
+    "TransactionDescription",
 ]
 
 logger = logging.getLogger(__name__)
 
 NO_STORE: Final = {"Cache-Control": "no-store"}
 TOKEN_BYTES: Final = 32
+
+
+class TransactionDescription(BaseModel):
+    """What a login page may show about the client asking for authorization."""
+
+    client_id: str
+    client_name: str | None = None
+    client_uri: AnyHttpUrl | None = None
+    logo_uri: AnyHttpUrl | None = None
+    scopes: list[str]
 
 
 def oauth_error(error: str, description: str, *, status_code: int = status.HTTP_400_BAD_REQUEST) -> JSONResponse:
@@ -67,8 +77,8 @@ def digest(secret: str) -> str:
 
 
 @dataclass(kw_only=True)
-class StoredProvider(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]):
-    """An authorization server over any `OAuthStorage`, authenticating users through an `Upstream`.
+class StoredProvider:
+    """An `AuthorizationServerProvider` over any `OAuthStorage`, authenticating users through an `Upstream`.
 
     Issues opaque access and refresh tokens of its own, carrying the identity's claims.
     """
@@ -129,23 +139,23 @@ class StoredProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refresh
 
     # Clients
 
-    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+    async def get_client(self, client_id: str) -> ClientInformation | None:
         match await self.storage.get(Namespace.CLIENTS, client_id):
             case None:
                 return None
             case record:
-                return OAuthClientInformationFull.model_validate(record)
+                return ClientInformation.model_validate(record)
 
-    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+    async def register_client(self, client: ClientInformation) -> None:
         ttl = None
-        if client_info.client_secret_expires_at:
-            ttl = timedelta(seconds=max(client_info.client_secret_expires_at - time.time(), 0))
+        if client.client_secret_expires_at:
+            ttl = timedelta(seconds=max(client.client_secret_expires_at - time.time(), 0))
 
-        await self.storage.set(Namespace.CLIENTS, client_info.client_id, dump(client_info), ttl=ttl)
+        await self.storage.set(Namespace.CLIENTS, client.client_id, dump(client), ttl=ttl)
 
     # Authorization
 
-    async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+    async def authorize(self, client: ClientInformation, params: AuthorizationParams) -> str:
         transaction = Transaction(
             id=new_token(),
             client_id=client.client_id,
@@ -214,34 +224,28 @@ class StoredProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refresh
 
     # Codes
 
-    async def load_authorization_code(
-        self, client: OAuthClientInformationFull, authorization_code: str
-    ) -> AuthorizationCode | None:
-        match await self.storage.get(Namespace.CODES, digest(authorization_code)):
+    async def load_authorization_code(self, client: ClientInformation, code: str) -> AuthorizationCode | None:
+        match await self.storage.get(Namespace.CODES, digest(code)):
             case None:
                 return None
             case record:
                 stored = StoredCode.model_validate(record)
                 return stored.code if stored.code.client_id == client.client_id else None
 
-    async def exchange_authorization_code(
-        self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
-    ) -> OAuthToken:
+    async def exchange_authorization_code(self, client: ClientInformation, code: AuthorizationCode) -> OAuthToken:
         # Popped, so a replayed code finds nothing.
-        if (record := await self.storage.pop(Namespace.CODES, digest(authorization_code.code))) is None:
+        if (record := await self.storage.pop(Namespace.CODES, digest(code.code))) is None:
             raise TokenError("invalid_grant", "Authorization code already used")
 
         stored = StoredCode.model_validate(record)
 
-        return await self.issue(
-            client, scopes=authorization_code.scopes, resource=authorization_code.resource, identity=stored.identity
-        )
+        return await self.issue(client, scopes=code.scopes, resource=code.resource, identity=stored.identity)
 
     # Tokens
 
     async def issue(
         self,
-        client: OAuthClientInformationFull,
+        client: ClientInformation,
         *,
         scopes: list[str],
         resource: str | None,
@@ -284,8 +288,8 @@ class StoredProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refresh
             refresh_token=refresh_token.token if refresh_token is not None else None,
         )
 
-    async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str) -> RefreshToken | None:
-        match await self.storage.get(Namespace.REFRESH_TOKENS, digest(refresh_token)):
+    async def load_refresh_token(self, client: ClientInformation, token: str) -> RefreshToken | None:
+        match await self.storage.get(Namespace.REFRESH_TOKENS, digest(token)):
             case None:
                 return None
             case record:
@@ -293,7 +297,7 @@ class StoredProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refresh
                 return stored.token if stored.token.client_id == client.client_id else None
 
     async def exchange_refresh_token(
-        self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list[str]
+        self, client: ClientInformation, refresh_token: RefreshToken, scopes: list[str]
     ) -> OAuthToken:
         # Rotated: the old refresh token is gone once the new pair is issued.
         if (record := await self.storage.pop(Namespace.REFRESH_TOKENS, digest(refresh_token.token))) is None:
@@ -373,16 +377,15 @@ class StoredProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refresh
                 "invalid_request", "Unknown or expired authorization request", status_code=status.HTTP_404_NOT_FOUND
             )
 
-        return JSONResponse(
-            {
-                "client_id": client.client_id,
-                "client_name": client.client_name,
-                "client_uri": str(client.client_uri) if client.client_uri else None,
-                "logo_uri": str(client.logo_uri) if client.logo_uri else None,
-                "scopes": transaction.scopes,
-            },
-            headers=NO_STORE,
+        description = TransactionDescription(
+            client_id=client.client_id,
+            client_name=client.client_name,
+            client_uri=client.client_uri,
+            logo_uri=client.logo_uri,
+            scopes=transaction.scopes,
         )
+
+        return Response(description.model_dump_json(), headers=NO_STORE, media_type="application/json")
 
 
 def dump(model: Any) -> Record:

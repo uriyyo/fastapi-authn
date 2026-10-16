@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx2
+from fastapi_authn.oauth.providers.oidc import OIDCUpstream
 
-from .oidc import OIDCUpstream
+if TYPE_CHECKING:
+    import httpx2
 
 __all__ = [
     "GOOGLE_ISSUER",

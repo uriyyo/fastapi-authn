@@ -5,12 +5,11 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Final
 
-from fastapi import APIRouter
-from mcp.server.auth.handlers.metadata import ProtectedResourceMetadataHandler
-from mcp.shared.auth import ProtectedResourceMetadata
+from fastapi import APIRouter, Request, Response
 from pydantic import AnyHttpUrl, ConfigDict, TypeAdapter
 
 from .discovery import add_well_known_route, build_resource_metadata_url, protected_resource_metadata_paths
+from .models import ProtectedResourceMetadata
 
 __all__ = [
     "ProtectedResource",
@@ -64,10 +63,15 @@ class ProtectedResource:
 
     @property
     def router(self) -> APIRouter:
+        from fastapi_authn.oauth.server.endpoints import metadata_response
+
         router = APIRouter()
-        handler = ProtectedResourceMetadataHandler(self.metadata)
+        metadata = self.metadata
+
+        async def serve_metadata(request: Request) -> Response:
+            return metadata_response(metadata)
 
         for path in self.metadata_paths:
-            add_well_known_route(router, path, handler.handle, name="oauth_protected_resource_metadata")
+            add_well_known_route(router, path, serve_metadata, name="oauth_protected_resource_metadata")
 
         return router

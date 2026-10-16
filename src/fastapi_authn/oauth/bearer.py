@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext
 from typing import Any, Final
 
@@ -10,14 +10,13 @@ from fastapi.openapi.models import HTTPBearer as HTTPBearerModel
 from fastapi.openapi.models import OAuth2 as OAuth2Model
 from fastapi.openapi.models import OAuthFlows
 from fastapi.security.base import SecurityBase
-from fastapi.security.oauth2 import SecurityScopes
 from fastapi.security.utils import get_authorization_scheme_param
 from fastapi_injected import MakeDataclass
-from mcp.server.auth.provider import AccessToken, TokenVerifier
 from pydantic import AnyHttpUrl, ValidationError
 
 from fastapi_authn._lifespan import lifespan_of
 
+from .models import AccessToken, TokenVerifier
 from .resource import ProtectedResource
 from .types import BearerErrorCode
 
@@ -31,7 +30,7 @@ WWW_AUTHENTICATE_HEADER: Final = "WWW-Authenticate"
 
 
 class OAuthBearerError(HTTPException):
-    """A 401 or 403 whose `WWW-Authenticate` tells the client where to get a token (RFC 6750, RFC 9728)."""
+    """A 401 whose `WWW-Authenticate` tells the client where to get a token (RFC 6750, RFC 9728)."""
 
     def __init__(
         self,
@@ -40,14 +39,11 @@ class OAuthBearerError(HTTPException):
         error: BearerErrorCode,
         description: str,
         resource_metadata: AnyHttpUrl | None = None,
-        scopes: Sequence[str] = (),
     ) -> None:
         parts = [f'error="{error}"', f'error_description="{description}"']
 
         if resource_metadata is not None:
             parts.append(f'resource_metadata="{resource_metadata}"')
-        if scopes:
-            parts.append(f'scope="{" ".join(scopes)}"')
 
         super().__init__(
             status_code=status_code,
@@ -67,8 +63,6 @@ class OAuthBearer(MakeDataclass, SecurityBase, eq=False, kw_only=True):
 
     verifier: TokenVerifier
     resource: ProtectedResource | None = None
-    # Required of every token; `Security(bearer, scopes=[...])` adds to them per route.
-    scopes: Sequence[str] = ()
     # Only accept tokens issued for `resource` (RFC 8707): the verifier must fill `AccessToken.resource`, and the
     # client must have sent `resource` when asking for the token; `False` for clients that do not.
     validate_resource: bool = True
@@ -90,7 +84,7 @@ class OAuthBearer(MakeDataclass, SecurityBase, eq=False, kw_only=True):
 
     @asynccontextmanager
     async def lifespan(self, app: Any) -> AsyncGenerator[None]:
-        """The verifier's lifespan, when it declares one; `MCPRouter` runs it for a bearer in `dependencies`."""
+        """The verifier's lifespan, when it declares one; run it as part of the app's."""
         lifespan = lifespan_of(self.verifier)
 
         async with lifespan(app) if lifespan is not None else nullcontext():
@@ -104,32 +98,28 @@ class OAuthBearer(MakeDataclass, SecurityBase, eq=False, kw_only=True):
     def metadata_url(self) -> AnyHttpUrl | None:
         return self.resource.metadata_url if self.resource is not None else None
 
-    async def __call__(self, request: Request, security_scopes: SecurityScopes) -> AccessToken | None:
-        required = [*self.scopes, *security_scopes.scopes]
-        return await self.authenticate(request, required=required, auto_error=self.auto_error)
+    async def __call__(self, request: Request) -> AccessToken | None:
+        return await self.authenticate(request, auto_error=self.auto_error)
 
-    async def authenticate(self, request: Request, *, required: Sequence[str], auto_error: bool) -> AccessToken | None:
+    async def authenticate(self, request: Request, *, auto_error: bool) -> AccessToken | None:
         scheme, token = get_authorization_scheme_param(request.headers.get("Authorization"))
 
         if scheme.lower() != BEARER_SCHEME or not token:
             if not auto_error:
                 return None
 
-            raise self.invalid_token("Authentication required", scopes=required)
+            raise self.invalid_token("Authentication required")
 
         access_token = await self.verifier.verify_token(token)
 
         if access_token is None:
-            raise self.invalid_token("Invalid or unknown token", scopes=required)
+            raise self.invalid_token("Invalid or unknown token")
 
         if access_token.expires_at is not None and access_token.expires_at < int(time.time()):
-            raise self.invalid_token("Token has expired", scopes=required)
+            raise self.invalid_token("Token has expired")
 
         if self.validate_resource and self.resource is not None and not self.issued_for_resource(access_token):
-            raise self.invalid_token(self.wrong_resource(access_token), scopes=required)
-
-        if missing := [scope for scope in required if scope not in access_token.scopes]:
-            raise self.insufficient_scope(missing, scopes=required)
+            raise self.invalid_token(self.wrong_resource(access_token))
 
         return access_token
 
@@ -148,20 +138,10 @@ class OAuthBearer(MakeDataclass, SecurityBase, eq=False, kw_only=True):
 
         return token_resource.removesuffix("/") == str(self.resource_url).removesuffix("/")
 
-    def invalid_token(self, description: str, *, scopes: Sequence[str] = ()) -> OAuthBearerError:
+    def invalid_token(self, description: str) -> OAuthBearerError:
         return OAuthBearerError(
             status_code=status.HTTP_401_UNAUTHORIZED,
             error="invalid_token",
             description=description,
             resource_metadata=self.metadata_url,
-            scopes=scopes,
-        )
-
-    def insufficient_scope(self, missing: Sequence[str], *, scopes: Sequence[str] = ()) -> OAuthBearerError:
-        return OAuthBearerError(
-            status_code=status.HTTP_403_FORBIDDEN,
-            error="insufficient_scope",
-            description=f"Required scope(s): {' '.join(missing)}",
-            resource_metadata=self.metadata_url,
-            scopes=scopes,
         )

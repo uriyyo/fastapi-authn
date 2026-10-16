@@ -4,9 +4,9 @@ from datetime import timedelta
 from enum import StrEnum
 from typing import Protocol
 
-from mcp.server.auth.provider import AuthorizationCode, RefreshToken
 from pydantic import AnyUrl, BaseModel, Field
 
+from fastapi_authn.oauth.models import AuthorizationCode, RefreshToken
 from fastapi_authn.oauth.types import Claims, Record
 
 __all__ = [

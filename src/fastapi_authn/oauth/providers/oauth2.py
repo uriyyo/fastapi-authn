@@ -8,16 +8,37 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
-import httpx2
 from fastapi import Request, status
-from mcp.server.auth.provider import construct_redirect_uri
+from pydantic import BaseModel, ConfigDict, ValidationError
 
+from fastapi_authn.exceptions import MissingExtra
+from fastapi_authn.oauth.models import construct_redirect_uri
 from fastapi_authn.oauth.server import Denied, Transaction
 from fastapi_authn.oauth.types import AuthenticationResult, CallbackMode
 
+try:
+    import httpx2
+except ImportError as e:
+    raise MissingExtra("oauth2", "OAuth2Upstream") from e
+
 __all__ = [
     "OAuth2Upstream",
+    "TokenResponse",
 ]
+
+
+class TokenResponse(BaseModel):
+    """What the upstream's token endpoint answered (RFC 6749 §5.1), whatever else it added."""
+
+    model_config = ConfigDict(extra="allow")
+
+    access_token: str
+    token_type: str | None = None
+    expires_in: int | None = None
+    refresh_token: str | None = None
+    scope: str | None = None
+    id_token: str | None = None
+
 
 CODE_VERIFIER_KEY: Final = "code_verifier"
 
@@ -82,7 +103,11 @@ class OAuth2Upstream(ABC):
         return await self.identity(tokens, transaction)
 
     async def exchange_code(self, code: str, transaction: Transaction, *, callback_url: str) -> dict[str, Any]:
-        data = {"grant_type": "authorization_code", "code": code, "redirect_uri": callback_url}
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": callback_url,
+        }
 
         if self.pkce:
             data[CODE_VERIFIER_KEY] = transaction.extra[CODE_VERIFIER_KEY]
@@ -100,12 +125,12 @@ class OAuth2Upstream(ABC):
         if response.status_code != status.HTTP_200_OK:
             raise UpstreamError(f"Token exchange failed with status {response.status_code}")
 
-        tokens = response.json()
+        try:
+            tokens = TokenResponse.model_validate_json(response.content)
+        except ValidationError as e:
+            raise UpstreamError("Token exchange returned no access token") from e
 
-        if not isinstance(tokens, dict) or "access_token" not in tokens:
-            raise UpstreamError("Token exchange returned no access token")
-
-        return tokens
+        return tokens.model_dump(exclude_none=True)
 
     @abstractmethod
     async def identity(self, tokens: dict[str, Any], transaction: Transaction) -> AuthenticationResult:
@@ -114,7 +139,9 @@ class OAuth2Upstream(ABC):
     @property
     def http(self) -> httpx2.AsyncClient:
         if self.http_client is None:
-            self.http_client = httpx2.AsyncClient(timeout=15)
+            self.http_client = httpx2.AsyncClient(
+                timeout=15,
+            )
 
         return self.http_client
 

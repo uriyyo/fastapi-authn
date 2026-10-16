@@ -4,9 +4,8 @@ from dataclasses import dataclass, field
 from typing import Protocol, cast
 
 from fastapi_injected import inject
-from mcp.server.auth.provider import AccessToken
-from mcp.shared.auth import OAuthClientInformationFull
 
+from fastapi_authn.oauth.models import AccessToken, ClientInformation
 from fastapi_authn.oauth.types import AuthenticationResult
 
 from .storage import Denied, Identity, Transaction
@@ -22,7 +21,7 @@ class IdentityHook(Protocol):
     """Enriches or refuses what the upstream reported, e.g. "is this user allowed in at all"."""
 
     async def __call__(
-        self, identity: Identity, client: OAuthClientInformationFull, transaction: Transaction, /
+        self, identity: Identity, client: ClientInformation, transaction: Transaction, /
     ) -> AuthenticationResult: ...
 
 
@@ -51,7 +50,7 @@ class ProviderHooks:
         return hook
 
     async def run_identity(
-        self, identity: Identity, client: OAuthClientInformationFull, transaction: Transaction
+        self, identity: Identity, client: ClientInformation, transaction: Transaction
     ) -> AuthenticationResult:
         result: AuthenticationResult = identity
 

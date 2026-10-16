@@ -1,7 +1,6 @@
 from .backend import ChainBackend
-from .chain import ActorUser, AuthChain, Authenticator, Challenger, actor_scopes
+from .chain import ActorUser, AuthChain, Authenticator, Challenger
 from .exceptions import UserError
-from .permissions import HasScopes, IsActor, denied
 
 __all__ = [
     "ActorUser",
@@ -9,9 +8,5 @@ __all__ = [
     "Authenticator",
     "ChainBackend",
     "Challenger",
-    "HasScopes",
-    "IsActor",
     "UserError",
-    "actor_scopes",
-    "denied",
 ]

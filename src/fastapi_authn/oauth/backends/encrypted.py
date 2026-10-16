@@ -4,10 +4,15 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
-from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from pydantic_core import from_json, to_json
 
+from fastapi_authn.exceptions import MissingExtra
 from fastapi_authn.oauth.server.storage import OAuthStorage
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+except ImportError as e:
+    raise MissingExtra("encrypted", "EncryptedStorage") from e
 
 __all__ = [
     "EncryptedStorage",

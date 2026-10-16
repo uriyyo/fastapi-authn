@@ -7,11 +7,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import anyio.to_thread
-import httpx2
-import jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
-from fastapi_authn.exceptions import UserError
+from fastapi_authn.exceptions import MissingExtra, UserError
+
+try:
+    import httpx2
+    import jwt
+except ImportError as e:
+    raise MissingExtra("oidc", "OIDCUpstream") from e
 from fastapi_authn.oauth.server import Identity, Transaction
 from fastapi_authn.oauth.types import AuthenticationResult
 
@@ -26,6 +30,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 WELL_KNOWN = "/.well-known/openid-configuration"
+CLAIMS: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
 
 
 class ProviderMetadata(BaseModel):
@@ -48,7 +53,7 @@ async def discover(issuer: str, http: httpx2.AsyncClient | None = None) -> Provi
             response = await client.get(url)
 
     response.raise_for_status()
-    return ProviderMetadata.model_validate(response.json())
+    return ProviderMetadata.model_validate_json(response.content)
 
 
 @dataclass(kw_only=True)
@@ -148,4 +153,4 @@ class OIDCUpstream(OAuth2Upstream):
     async def userinfo(self, access_token: str) -> dict[str, Any]:
         response = await self.http.get(str(self.userinfo_endpoint), headers={"Authorization": f"Bearer {access_token}"})
         response.raise_for_status()
-        return response.json()
+        return CLAIMS.validate_json(response.content)

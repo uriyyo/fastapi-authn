@@ -8,7 +8,7 @@ from fastapi_injected import DependencyResolutionError, push_inject_scope, resol
 from starlette.authentication import AuthCredentials, AuthenticationBackend, BaseUser
 from starlette.requests import HTTPConnection
 
-from .chain import ActorUser, AuthChain, actor_scopes
+from .chain import ActorUser, AuthChain
 
 __all__ = [
     "ChainBackend",
@@ -41,4 +41,4 @@ class ChainBackend(AuthenticationBackend):
         if actor is None:
             return None
 
-        return AuthCredentials([*actor_scopes(actor)]), ActorUser(actor)
+        return AuthCredentials(), ActorUser(actor)

@@ -10,25 +10,33 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.143.0",
-    "fastapi-has-permissions>=0.4.1",
     "fastapi-injected>=0.3.6",
-    "mcp>=2.3.0",
     "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
-oauth = [
-    "cryptography>=42.0.0",
-    "httpx2>=2.10.0",
-    "pyjwt[crypto]>=2.10.1",
-]
-redis = [
-    "fastapi-authn[oauth]",
-    "redis>=5.0.0",
-]
-sqlalchemy = [
-    "fastapi-authn[oauth]",
-    "sqlalchemy[asyncio]>=2.0.0",
+# OAuth building blocks
+jwt = ["pyjwt[crypto]>=2.10.1"]
+oidc = ["fastapi-authn[jwt]", "httpx2>=2.10.0"]
+introspection = ["httpx2>=2.10.0"]
+oauth2 = ["httpx2>=2.10.0"]
+# Authorization server storage
+encrypted = ["cryptography>=42.0.0"]
+redis = ["redis>=5.0.0"]
+sqlalchemy = ["sqlalchemy[asyncio]>=2.0.0"]
+# fastapi_authn.ext: one extra per vendor
+auth0 = ["fastapi-authn[oidc]"]
+clerk = ["fastapi-authn[jwt]"]
+cognito = ["fastapi-authn[jwt]"]
+entra = ["fastapi-authn[oidc]"]
+firebase = ["fastapi-authn[jwt]"]
+github = ["fastapi-authn[oauth2]"]
+google = ["fastapi-authn[oidc]"]
+keycloak = ["fastapi-authn[oidc]"]
+okta = ["fastapi-authn[oidc]"]
+supabase = ["fastapi-authn[jwt]"]
+all = [
+    "fastapi-authn[jwt,oidc,introspection,oauth2,encrypted,redis,sqlalchemy]",
 ]
 
 [build-system]
@@ -58,6 +66,7 @@ ignore = [
     "ASYNC240", # allow async functions to use pathlib.Path methods
     "B008",    # do not perform function calls in argument defaults
     "S101",    # use of assert detected
+    "S105",    # OAuth names everything `token_*`; nothing hardcoded here is a secret
     "SIM114",  # allow have multiple ifs with same body
     "TRY003",  # allow long exc message
     "RUF100",  # allow unused noqa

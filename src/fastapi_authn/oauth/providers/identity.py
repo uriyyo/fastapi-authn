@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from fastapi import Request
-from mcp.server.auth.provider import construct_redirect_uri
+from pydantic import TypeAdapter, ValidationError
 
+from fastapi_authn.oauth.models import construct_redirect_uri
 from fastapi_authn.oauth.server import Denied, Identity, Transaction
 from fastapi_authn.oauth.types import AuthenticationResult, CallbackMode
 
@@ -14,6 +15,8 @@ __all__ = [
     "Authenticate",
     "IdentityUpstream",
 ]
+
+PAYLOAD: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
 
 
 class Authenticate(Protocol):
@@ -43,11 +46,9 @@ class IdentityUpstream:
 
     async def payload(self, request: Request) -> dict[str, Any]:
         try:
-            body = await request.json()
-        except ValueError:
+            return PAYLOAD.validate_json(await request.body())
+        except ValidationError:
             return {}
-
-        return body if isinstance(body, dict) else {}
 
     async def state_of(self, request: Request) -> str | None:
         payload = await self.payload(request)

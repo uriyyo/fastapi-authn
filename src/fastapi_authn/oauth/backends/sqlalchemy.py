@@ -8,13 +8,13 @@ from typing import Any
 
 from pydantic_core import from_json, to_json
 
+from fastapi_authn.exceptions import MissingExtra
+
 try:
     from sqlalchemy import Column, DateTime, MetaData, String, Table, Text, delete, select
     from sqlalchemy.ext.asyncio import AsyncEngine
 except ImportError as e:
-    raise ImportError(
-        "SQLAlchemyStorage needs the `oauth-sqlalchemy` extra: pip install 'fastapi-mcp-toolsets[oauth-sqlalchemy]'"
-    ) from e
+    raise MissingExtra("sqlalchemy", "SQLAlchemyStorage") from e
 
 __all__ = [
     "SQLAlchemyStorage",
@@ -48,7 +48,6 @@ class SQLAlchemyStorage:
 
     @asynccontextmanager
     async def lifespan(self, app: Any) -> AsyncGenerator[None]:
-        """Creates the table and drops expired rows at startup; runs as part of the authorization server's lifespan."""
         await self.create_table()
         await self.purge_expired()
         yield
@@ -58,7 +57,6 @@ class SQLAlchemyStorage:
             await connection.run_sync(self.metadata.create_all, tables=[self.table])
 
     async def purge_expired(self) -> int:
-        """Deletes the rows that expired; call it from a schedule when tokens are rarely read again."""
         async with self.engine.begin() as connection:
             result = await connection.execute(delete(self.table).where(self.table.c.expires_at <= datetime.now(UTC)))
             return result.rowcount

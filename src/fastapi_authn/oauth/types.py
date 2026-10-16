@@ -20,7 +20,7 @@ type AuthenticationResult = Identity | Denied
 type CallbackMode = Literal["redirect", "json"]
 
 # RFC 6750 error codes a bearer challenge may carry.
-type BearerErrorCode = Literal["invalid_token", "insufficient_scope"]
+type BearerErrorCode = Literal["invalid_token"]
 
 # A token's claims, and a storage record: JSON objects.
 type Claims = dict[str, Any]

@@ -5,24 +5,37 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any
 
-import httpx2
 from fastapi import status
-from mcp.server.auth.provider import AccessToken
+from pydantic import ValidationError
+
+from fastapi_authn.exceptions import MissingExtra
+from fastapi_authn.oauth.models import AccessToken, TokenClaims
+
+try:
+    import httpx2
+except ImportError as e:
+    raise MissingExtra("introspection", "IntrospectionVerifier") from e
 
 __all__ = [
+    "IntrospectionResponse",
     "IntrospectionVerifier",
 ]
 
 logger = logging.getLogger(__name__)
 
 
+class IntrospectionResponse(TokenClaims):
+    """RFC 7662 §2.2."""
+
+    active: bool
+
+
 @dataclass(kw_only=True)
 class IntrospectionVerifier:
     """Asks the authorization server about each token (RFC 7662); for opaque tokens.
 
-    An answer is kept for `cache_ttl`, or until the token expires if sooner, so a burst of MCP requests is one
+    An answer is kept for `cache_ttl`, or until the token expires if sooner, so a burst of requests is one
     introspection; `None` asks every time.
     """
 
@@ -66,38 +79,23 @@ class IntrospectionVerifier:
             logger.warning("Token introspection failed with status %s", response.status_code)
             return None
 
-        match response.json():
-            case {"active": True, **claims}:
-                return self.access_token(token, claims)
-            case _:
-                return None
-
-    def access_token(self, token: str, claims: dict[str, Any]) -> AccessToken | None:
-        client_id = claims.get("client_id") or claims.get("azp") or claims.get("sub")
-
-        if client_id is None:
+        try:
+            introspection = IntrospectionResponse.model_validate_json(response.content)
+        except ValidationError:
+            logger.warning("Token introspection returned an unreadable response")
             return None
 
-        match claims.get("scope"):
-            case str() as scope:
-                scopes = scope.split()
-            case [*listed]:
-                scopes = [str(scope) for scope in listed]
-            case _:
-                scopes = []
+        return self.access_token(token, introspection) if introspection.active else None
 
-        aud = claims.get("aud")
-        expires_at = claims.get("exp")
-        subject = claims.get("sub")
-
+    def access_token(self, token: str, claims: IntrospectionResponse) -> AccessToken | None:
         return AccessToken(
             token=token,
-            client_id=str(client_id),
-            scopes=scopes,
-            expires_at=int(expires_at) if expires_at is not None else None,
-            resource=aud if isinstance(aud, str) else None,
-            subject=str(subject) if subject is not None else None,
-            claims=claims,
+            client_id=claims.client_id or claims.azp,
+            scopes=claims.scope,
+            expires_at=claims.exp,
+            resource=claims.resource(),
+            subject=claims.sub,
+            claims=claims.model_dump(exclude={"active"}, exclude_none=True),
         )
 
     @property

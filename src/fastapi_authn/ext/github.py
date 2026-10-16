@@ -3,14 +3,36 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+
+from fastapi_authn.oauth.providers.oauth2 import OAuth2Upstream, UpstreamError
 from fastapi_authn.oauth.server import Identity, Transaction
 from fastapi_authn.oauth.types import AuthenticationResult
 
-from .oauth2 import OAuth2Upstream, UpstreamError
-
 __all__ = [
+    "GitHubEmail",
     "GitHubUpstream",
+    "GitHubUser",
 ]
+
+
+class GitHubUser(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: int
+    login: str
+    name: str | None = None
+    email: str | None = None
+    avatar_url: str | None = None
+
+
+class GitHubEmail(BaseModel):
+    email: str
+    primary: bool = False
+    verified: bool = False
+
+
+EMAILS: TypeAdapter[list[GitHubEmail]] = TypeAdapter(list[GitHubEmail])
 
 GITHUB_AUTHORIZATION_ENDPOINT = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_ENDPOINT = "https://github.com/login/oauth/access_token"  # noqa: S105
@@ -36,19 +58,20 @@ class GitHubUpstream(OAuth2Upstream):
 
         response = await self.http.get(GITHUB_USER_ENDPOINT, headers=headers)
         response.raise_for_status()
-        user = response.json()
 
-        if not isinstance(user, dict) or "id" not in user:
-            raise UpstreamError("GitHub returned no user")
+        try:
+            user = GitHubUser.model_validate_json(response.content)
+        except ValidationError as e:
+            raise UpstreamError("GitHub returned no user") from e
 
         claims = {
-            "login": user.get("login"),
-            "name": user.get("name"),
-            "email": user.get("email") or await self.primary_email(headers),
-            "avatar_url": user.get("avatar_url"),
+            "login": user.login,
+            "name": user.name,
+            "email": user.email or await self.primary_email(headers),
+            "avatar_url": user.avatar_url,
         }
 
-        return Identity(subject=str(user["id"]), claims=claims, upstream_tokens=tokens)
+        return Identity(subject=str(user.id), claims=claims, upstream_tokens=tokens)
 
     async def primary_email(self, headers: dict[str, str]) -> str | None:
         # Private emails are only listed here, and only with the `user:email` scope.
@@ -60,8 +83,9 @@ class GitHubUpstream(OAuth2Upstream):
         if response.is_error:
             return None
 
-        for email in response.json():
-            if email.get("primary") and email.get("verified"):
-                return email.get("email")
+        try:
+            emails = EMAILS.validate_json(response.content)
+        except ValidationError:
+            return None
 
-        return None
+        return next((email.email for email in emails if email.primary and email.verified), None)

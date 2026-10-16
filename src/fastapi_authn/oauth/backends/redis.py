@@ -6,12 +6,12 @@ from typing import Any
 
 from pydantic_core import from_json, to_json
 
+from fastapi_authn.exceptions import MissingExtra
+
 try:
     from redis.asyncio import Redis
 except ImportError as e:
-    raise ImportError(
-        "RedisStorage needs the `oauth-redis` extra: pip install 'fastapi-mcp-toolsets[oauth-redis]'"
-    ) from e
+    raise MissingExtra("redis", "RedisStorage") from e
 
 __all__ = [
     "RedisStorage",

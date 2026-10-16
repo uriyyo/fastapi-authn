@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from dataclasses import field
 from typing import Annotated, Any, Final, Protocol, runtime_checkable
 
@@ -13,7 +13,6 @@ __all__ = [
     "AuthChain",
     "Authenticator",
     "Challenger",
-    "actor_scopes",
 ]
 
 # Any FastAPI dependency: it reads its credential with FastAPI's own `Security`, `Header` or `Depends`
@@ -25,19 +24,9 @@ ACTOR_PARAMETER: Final = "actor_{index}"
 
 @runtime_checkable
 class Challenger(Protocol):
-    """Builds the 401 and 403 a request without a usable credential gets; `OAuthBearer` is one."""
+    """Builds the 401 a request without a usable credential gets; `OAuthBearer` is one."""
 
-    def invalid_token(self, description: str, *, scopes: Sequence[str] = ()) -> HTTPException: ...
-
-    def insufficient_scope(self, missing: Sequence[str], *, scopes: Sequence[str] = ()) -> HTTPException: ...
-
-
-def actor_scopes(actor: Any) -> Sequence[str]:
-    match getattr(actor, "scopes", None):
-        case [*scopes]:
-            return [str(scope) for scope in scopes]
-        case _:
-            return ()
+    def invalid_token(self, description: str) -> HTTPException: ...
 
 
 class AuthChain(MakeDataclass, eq=False, kw_only=True):
@@ -46,7 +35,7 @@ class AuthChain(MakeDataclass, eq=False, kw_only=True):
     Each authenticator is an ordinary FastAPI dependency, so header extraction, OpenAPI security schemes,
     sub-dependencies and `app.dependency_overrides` all come from FastAPI. The chain itself is a dependency:
     `Security(auth)` on a router, `DepFactory[Actor, auth]` in deps. It only authenticates; what the actor may
-    do is a permission over it, see `IsActor` and `HasScopes`.
+    do is for the application to decide over it.
     """
 
     # Answers a request without any credential; without one, a bare `WWW-Authenticate: Bearer` 401.
