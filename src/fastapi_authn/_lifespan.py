@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Protocol, overload
 
 from starlette.types import Lifespan
 
@@ -7,6 +7,17 @@ __all__ = [
 ]
 
 
+class HasLifespan[T](Protocol):
+    lifespan: Lifespan[T]
+
+
+@overload
+def lifespan_of[T](obj: HasLifespan[T]) -> Lifespan[T]: ...
+
+
+@overload
+def lifespan_of(obj: Any) -> Lifespan[Any] | None: ...
+
+
 def lifespan_of(obj: Any) -> Lifespan[Any] | None:
-    """The `lifespan` an object declares, if any."""
     return getattr(obj, "lifespan", None)

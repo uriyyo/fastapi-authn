@@ -259,6 +259,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "fastapi-injected" },
     { name = "pydantic" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -362,8 +363,9 @@ requires-dist = [
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'jwt'", specifier = ">=2.10.1" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'sqlalchemy'", specifier = ">=2.0.0" },
+    { name = "typing-extensions", specifier = ">=4.12.0" },
 ]
-provides-extras = ["jwt", "oidc", "introspection", "oauth2", "encrypted", "redis", "sqlalchemy", "github", "google", "auth0", "clerk", "cognito", "entra", "firebase", "keycloak", "okta", "supabase", "all"]
+provides-extras = ["jwt", "oidc", "introspection", "oauth2", "encrypted", "redis", "sqlalchemy", "auth0", "clerk", "cognito", "entra", "firebase", "github", "google", "keycloak", "okta", "supabase", "all"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -12,6 +12,7 @@ dependencies = [
     "fastapi>=0.143.0",
     "fastapi-injected>=0.3.6",
     "pydantic>=2.0.0",
+    "typing-extensions>=4.12.0",
 ]
 
 [project.optional-dependencies]
