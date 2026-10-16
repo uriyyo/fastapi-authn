@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 import anyio.to_thread
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from fastapi_authn.exceptions import MissingExtra
-from fastapi_authn.oauth.models import AccessToken
+from fastapi_authn.oauth.models import AccessToken, Subject
 from fastapi_authn.oauth.verifiers.jwt import JWTVerifier
 
 try:
@@ -35,9 +35,7 @@ CERTIFICATES: TypeAdapter[dict[str, str]] = TypeAdapter(dict[str, str])
 class FirebaseClaims(BaseModel):
     """What Firebase guarantees beyond the registered claims; `sub` is the user's uid and never empty."""
 
-    model_config = ConfigDict(coerce_numbers_to_str=True)
-
-    sub: str = Field(min_length=1)
+    sub: Subject
     exp: int | None = None
     auth_time: float | None = None
 

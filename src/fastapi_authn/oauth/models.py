@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic import (
+    AfterValidator,
     AnyHttpUrl,
     AnyUrl,
     BaseModel,
@@ -12,7 +13,6 @@ from pydantic import (
     ConfigDict,
     Field,
     TypeAdapter,
-    field_validator,
     model_validator,
 )
 
@@ -25,16 +25,21 @@ __all__ = [
     "AuthorizationCode",
     "AuthorizationParams",
     "AuthorizationServerMetadata",
+    "BearerTokenType",
     "ClientInformation",
     "ClientMetadata",
+    "NonEmpty",
     "OAuthToken",
+    "OneOrMany",
     "ProtectedResourceMetadata",
     "RefreshToken",
     "Scopes",
+    "Subject",
     "TokenClaims",
     "TokenEndpointAuthMethod",
     "TokenVerifier",
     "construct_redirect_uri",
+    "containing",
 ]
 
 TokenEndpointAuthMethod = Literal["none", "client_secret_post", "client_secret_basic"]
@@ -46,7 +51,7 @@ DEFAULT_GRANT_TYPES = ["authorization_code", "refresh_token"]
 URL_CONFIG = ConfigDict(url_preserve_empty_path=True)
 
 
-# Tokens
+# Annotated types
 
 
 def _split_scopes(value: object) -> object:
@@ -54,9 +59,44 @@ def _split_scopes(value: object) -> object:
     return value.split() if isinstance(value, str) else value
 
 
+def _listed(value: object) -> object:
+    return [value] if isinstance(value, str) else value
+
+
+def _text(value: object) -> object:
+    # Some issuers put a numeric id in a string claim.
+    return str(value) if isinstance(value, int | float) and not isinstance(value, bool) else value
+
+
+def _titled(value: object) -> object:
+    return value.title() if isinstance(value, str) else value
+
+
+def containing[T](item: T) -> AfterValidator:
+    """Requires `item` among a list field's values."""
+
+    def check(items: list[T]) -> list[T]:
+        if item not in items:
+            raise ValueError(f"must include {item!r}")
+
+        return items
+
+    return AfterValidator(check)
+
+
 # `"read write"` or `["read", "write"]` to `["read", "write"]`.
 type Scopes = Annotated[list[str], BeforeValidator(_split_scopes)]
 SCOPES: TypeAdapter[list[str]] = TypeAdapter(Scopes)
+# A claim that is one value or a list of them, as `aud`, always read as a list.
+type OneOrMany[T] = Annotated[list[T], BeforeValidator(_listed)]
+type NonEmpty[T] = Annotated[list[T], Field(min_length=1)]
+# A `sub` claim: never empty, and a number is taken as text.
+type Subject = Annotated[str, BeforeValidator(_text), Field(min_length=1)]
+# RFC 6750 §4 spells it `Bearer`; servers answer `bearer` too.
+type BearerTokenType = Annotated[Literal["Bearer"], BeforeValidator(_titled)]
+
+
+# Tokens
 
 
 class TokenClaims(BaseModel):
@@ -65,29 +105,18 @@ class TokenClaims(BaseModel):
     model_config = ConfigDict(extra="allow", coerce_numbers_to_str=True)
 
     iss: str | None = None
-    sub: str | None = None
-    aud: str | list[str] | None = None
+    sub: Subject | None = None
+    aud: OneOrMany[str] = Field(default_factory=list)
     exp: int | None = None
     client_id: str | None = None
     azp: str | None = None
     scope: Scopes = Field(default_factory=list)
 
-    @property
-    def audiences(self) -> list[str]:
-        match self.aud:
-            case None:
-                return []
-            case str() as aud:
-                return [aud]
-            case auds:
-                return auds
-
     def resource(self, accepted: str | Sequence[str] | None = None) -> str | None:
         """The audience the token is taken for: the one in `accepted` when it names several, else its first."""
-        audiences = self.audiences
         accepted = [accepted] if isinstance(accepted, str) else list(accepted or ())
 
-        return next((aud for aud in audiences if aud in accepted), audiences[0] if audiences else None)
+        return next((aud for aud in self.aud if aud in accepted), self.aud[0] if self.aud else None)
 
 
 class AccessToken(BaseModel):
@@ -152,15 +181,10 @@ class OAuthToken(BaseModel):
     """The token endpoint's answer (RFC 6749 §5.1)."""
 
     access_token: str
-    token_type: Literal["Bearer"] = "Bearer"
+    token_type: BearerTokenType = "Bearer"
     expires_in: int | None = None
     scope: str | None = None
     refresh_token: str | None = None
-
-    @field_validator("token_type", mode="before")
-    @classmethod
-    def normalize_token_type(cls, value: Any) -> Any:
-        return value.title() if isinstance(value, str) else value
 
 
 # Authorization
@@ -191,7 +215,7 @@ class ClientMetadata(BaseModel):
 
     model_config = URL_CONFIG
 
-    redirect_uris: list[AnyUrl] = Field(..., min_length=1)
+    redirect_uris: NonEmpty[AnyUrl]
     token_endpoint_auth_method: TokenEndpointAuthMethod | None = None
     grant_types: list[str] = Field(default_factory=lambda: list(DEFAULT_GRANT_TYPES))
     response_types: list[str] = Field(default_factory=lambda: ["code"])
@@ -297,7 +321,7 @@ class ProtectedResourceMetadata(BaseModel):
     model_config = URL_CONFIG
 
     resource: AnyHttpUrl
-    authorization_servers: list[AnyHttpUrl] = Field(..., min_length=1)
+    authorization_servers: NonEmpty[AnyHttpUrl]
     jwks_uri: AnyHttpUrl | None = None
     scopes_supported: list[str] | None = None
     bearer_methods_supported: list[str] | None = Field(default_factory=lambda: ["header"])

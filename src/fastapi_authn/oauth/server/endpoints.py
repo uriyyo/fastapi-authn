@@ -14,17 +14,19 @@ from uuid import uuid4
 
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import AnyUrl, BaseModel, Field, TypeAdapter, ValidationError, field_validator
+from pydantic import AnyUrl, BaseModel, Field, TypeAdapter, ValidationError
 from starlette.datastructures import FormData, QueryParams, UploadFile
 
 from fastapi_authn.oauth.errors import AuthorizeError, OAuthError, RegistrationError, TokenError
 from fastapi_authn.oauth.models import (
+    DEFAULT_GRANT_TYPES,
     AccessToken,
     AuthorizationParams,
     ClientInformation,
     ClientMetadata,
     RefreshToken,
     construct_redirect_uri,
+    containing,
 )
 
 from .protocol import AuthorizationServerProvider, ClientRegistrationOptions
@@ -361,21 +363,10 @@ class TokenEndpoint:
 class RegistrationRequest(ClientMetadata):
     """`ClientMetadata` as this server accepts it: the authorization code grant with PKCE, nothing less."""
 
-    @field_validator("grant_types")
-    @classmethod
-    def _authorization_code(cls, grant_types: list[str]) -> list[str]:
-        if "authorization_code" not in grant_types:
-            raise ValueError("must include 'authorization_code'")
-
-        return grant_types
-
-    @field_validator("response_types")
-    @classmethod
-    def _code(cls, response_types: list[str]) -> list[str]:
-        if "code" not in response_types:
-            raise ValueError("must include 'code'")
-
-        return response_types
+    grant_types: Annotated[list[str], containing("authorization_code")] = Field(
+        default_factory=lambda: list(DEFAULT_GRANT_TYPES)
+    )
+    response_types: Annotated[list[str], containing("code")] = Field(default_factory=lambda: ["code"])
 
 
 @dataclass
