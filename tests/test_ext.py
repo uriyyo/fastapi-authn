@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI, Security
 from fastapi.testclient import TestClient
 
+from fastapi_authn import add_authn
 from fastapi_authn.exceptions import MissingExtra
 from fastapi_authn.ext.auth0 import Auth0Verifier
 from fastapi_authn.ext.clerk import ClerkVerifier
@@ -209,6 +210,7 @@ def lazy_app(verifier: TokenVerifier, **options: Any) -> TestClient:
     bearer = OAuthBearer(verifier=verifier)
     lazy = LazyBearer(bearer=bearer, **options)
     app = FastAPI()
+    add_authn(app)
 
     @app.post("/mcp")
     async def mcp(token: Annotated[AccessToken | None, Security(lazy)]) -> str | None:
@@ -244,6 +246,7 @@ def test_lazy_bearer_protects_everything_by_default(verifier_of: Callable[..., T
 
 def test_openai_apps_challenge() -> None:
     app = FastAPI()
+    add_authn(app)
     app.include_router(openai_apps_challenge("tok3n"))
     response = TestClient(app).get("/.well-known/openai-apps-challenge")
     assert response.text == "tok3n"

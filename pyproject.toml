@@ -10,7 +10,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.143.0",
-    "fastapi-injected>=0.3.6",
+    "fastapi-injected>=0.4.1",
     "pydantic>=2.0.0",
     "typing-extensions>=4.12.0",
 ]

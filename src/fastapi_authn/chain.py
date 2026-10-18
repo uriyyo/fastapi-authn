@@ -2,20 +2,21 @@ from __future__ import annotations
 
 import copy
 import inspect
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
-from contextlib import asynccontextmanager
-from dataclasses import field, replace
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field, replace
 from functools import wraps
 from typing import Annotated, Any, Concatenate, Final, Generic, Protocol, TypeAlias, cast
 
-from fastapi import HTTPException, Request, Security, status
-from fastapi.dependencies.models import Dependant
-from fastapi.dependencies.utils import get_dependant
+from fastapi import HTTPException, Security, status
 from fastapi.openapi.models import APIKey, HTTPBase, OAuth2, OpenIdConnect
 from fastapi.security.base import SecurityBase
-from fastapi_injected import InjectScope, MakeDataclass, bind_deps, init_inject_scope, resolve
+from fastapi_injected import InjectionContext, bind_deps, resolve
+from fastapi_injected.reflect import iter_security
 from starlette.authentication import BaseUser
+from starlette.requests import HTTPConnection
 from typing_extensions import ParamSpec, TypeVar
+
+from .exceptions import UserError
 
 __all__ = [
     "ActorUser",
@@ -53,7 +54,7 @@ class SecurityScheme(Protocol[_TCredential_co]):
     model: Any
     scheme_name: str
 
-    async def __call__(self, request: Request) -> _TCredential_co | None: ...
+    async def __call__(self, request: HTTPConnection) -> _TCredential_co | None: ...
 
 
 CREDENTIAL_PARAMETER: Final = "credential_{index}"
@@ -61,7 +62,8 @@ SCHEME_PARAMETER: Final = "scheme_{index}_{position}"
 WWW_AUTHENTICATE: Final = "WWW-Authenticate"
 
 
-class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
+@dataclass(eq=False, kw_only=True)
+class AuthChain(Generic[_TActor]):
     """Several ways to authenticate, tried in registration order; the first actor wins.
 
     Each authenticator is an ordinary FastAPI dependency, so header extraction, OpenAPI security schemes,
@@ -86,7 +88,6 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
     _optional: AuthChain[_TActor] | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
-        super().__post_init__()
         self._rebuild_signature()
 
     def authenticator(
@@ -142,7 +143,7 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
         # Only the credentials are sub-dependencies: cheap to extract, and what OpenAPI lists. For an
         # authenticator registered through `scheme()` its own is read here, to skip it when nothing was sent;
         # a plain one has whatever schemes it declares extracted ahead, so they are documented too.
-        parameters = [inspect.Parameter("request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request)]
+        parameters = [inspect.Parameter("request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=HTTPConnection)]
 
         for index, authenticator in enumerate(self.authenticators):
             if (dependency := self.credentials.get(authenticator)) is not None:
@@ -166,7 +167,7 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
 
         self.__signature__ = inspect.Signature(parameters, return_annotation=Any | None)
 
-    async def __call__(self, request: Request, **extracted: Any) -> _TActor | None:
+    async def __call__(self, request: HTTPConnection, **extracted: Any) -> _TActor | None:
         # An `AuthenticationMiddleware` with `ChainBackend` may already have decided.
         match request.scope.get("user"):
             case ActorUser(actor=actor):
@@ -174,16 +175,18 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
             case _:
                 pass
 
-        async with inject_scope_of(request):
-            for index, authenticator in enumerate(self.authenticators):
-                credential = extracted.get(CREDENTIAL_PARAMETER.format(index=index))
+        if InjectionContext.current() is None:
+            raise UserError("AuthChain needs a prepared app: call add_authn(app)")
 
-                if authenticator in self.credentials and credential is None:
-                    continue
+        for index, authenticator in enumerate(self.authenticators):
+            credential = extracted.get(CREDENTIAL_PARAMETER.format(index=index))
 
-                # `resolve` sees the authenticator's signature, not what it produces.
-                if (actor := cast("_TActor | None", await resolve(authenticator))) is not None:
-                    return actor
+            if authenticator in self.credentials and credential is None:
+                continue
+
+            # `resolve` sees the authenticator's signature, not what it produces.
+            if (actor := cast("_TActor | None", await resolve(authenticator))) is not None:
+                return actor
 
         if not self.auto_error:
             return None
@@ -192,11 +195,7 @@ class AuthChain(MakeDataclass, Generic[_TActor], eq=False, kw_only=True):
 
     @property
     def schemes(self) -> list[SecurityBase]:
-        return [
-            dependant.call
-            for dependant in walk(get_dependant(path="", call=self))
-            if isinstance(dependant.call, SecurityBase)
-        ]
+        return [scheme for scheme, _ in iter_security(self)]
 
     @property
     def www_authenticate(self) -> str:
@@ -260,35 +259,5 @@ class ActorUser(BaseUser, Generic[_TActor]):
         return self.display_name
 
 
-@asynccontextmanager
-async def inject_scope_of(request: Request) -> AsyncGenerator[None]:
-    if (current := InjectScope.current()) is not None and current.bound:
-        yield
-        return
-
-    async with asynccontextmanager(init_inject_scope)(request):
-        yield
-
-
 def security_dependencies_of(call: Callable[..., Any]) -> list[Any]:
-    return [
-        Security(dependant.call, scopes=dependant.own_oauth_scopes)
-        for dependant in walk(get_dependant(path="", call=call))
-        if isinstance(dependant.call, SecurityBase)
-    ]
-
-
-def walk(dependant: Dependant) -> Iterator[Dependant]:
-    # Every dependant below `dependant`, depth first, each once.
-    seen: set[int] = set()
-    stack = list(reversed(dependant.dependencies))
-
-    while stack:
-        current = stack.pop()
-
-        if id(current) in seen:
-            continue
-
-        seen.add(id(current))
-        yield current
-        stack.extend(reversed(current.dependencies))
+    return [Security(cast("Callable[..., Any]", scheme), scopes=scopes) for scheme, scopes in iter_security(call)]

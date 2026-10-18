@@ -3,16 +3,17 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext
+from dataclasses import dataclass
 from typing import Any, Final
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, status
 from fastapi.openapi.models import HTTPBearer as HTTPBearerModel
 from fastapi.openapi.models import OAuth2 as OAuth2Model
 from fastapi.openapi.models import OAuthFlows
 from fastapi.security.base import SecurityBase
 from fastapi.security.utils import get_authorization_scheme_param
-from fastapi_injected import MakeDataclass
 from pydantic import AnyHttpUrl, ValidationError
+from starlette.requests import HTTPConnection
 
 from fastapi_authn._lifespan import lifespan_of
 
@@ -54,7 +55,8 @@ class OAuthBearerError(HTTPException):
         self.description = description
 
 
-class OAuthBearer(MakeDataclass, SecurityBase, eq=False, kw_only=True):
+@dataclass(eq=False, kw_only=True)
+class OAuthBearer(SecurityBase):
     """A FastAPI security dependency resolving the request's bearer token to an `AccessToken`.
 
     Compared by identity, so `Security(bearer)` on a route and `DepFactory[AccessToken, bearer]` in deps
@@ -74,7 +76,6 @@ class OAuthBearer(MakeDataclass, SecurityBase, eq=False, kw_only=True):
     flows: OAuthFlows | None = None
 
     def __post_init__(self) -> None:
-        super().__post_init__()
         self.scheme_name = self.scheme_name or type(self).__name__
         self.model = (
             OAuth2Model(flows=self.flows, description=self.description)
@@ -98,10 +99,10 @@ class OAuthBearer(MakeDataclass, SecurityBase, eq=False, kw_only=True):
     def metadata_url(self) -> AnyHttpUrl | None:
         return self.resource.metadata_url if self.resource is not None else None
 
-    async def __call__(self, request: Request) -> AccessToken | None:
+    async def __call__(self, request: HTTPConnection) -> AccessToken | None:
         return await self.authenticate(request, auto_error=self.auto_error)
 
-    async def authenticate(self, request: Request, *, auto_error: bool) -> AccessToken | None:
+    async def authenticate(self, request: HTTPConnection, *, auto_error: bool) -> AccessToken | None:
         scheme, token = get_authorization_scheme_param(request.headers.get("Authorization"))
 
         if scheme.lower() != BEARER_SCHEME or not token:

@@ -5,13 +5,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Generic
 
-from fastapi import HTTPException, Request
-from fastapi_injected import DependencyResolutionError, push_inject_scope, resolve
+from fastapi import HTTPException
+from fastapi_injected import DependencyResolutionError, InjectionContext, resolve
 from starlette.authentication import AuthCredentials, AuthenticationBackend, BaseUser
 from starlette.requests import HTTPConnection
 from typing_extensions import TypeVar
 
 from .chain import ActorUser, AuthChain
+from .exceptions import UserError
 
 __all__ = [
     "AUTHENTICATED",
@@ -40,16 +41,14 @@ class ChainBackend(AuthenticationBackend, Generic[_TActor]):
     display_name: Callable[[_TActor], str] = str
 
     async def authenticate(self, conn: HTTPConnection) -> tuple[AuthCredentials, BaseUser] | None:
-        # Headers and cookies are what authenticators read, and a WebSocket handshake carries them like a
-        # request; no body is available either way.
-        scope = {**conn.scope, "type": "http"}
+        if InjectionContext.current() is None:
+            raise UserError("ChainBackend needs a prepared app: call add_authn(app)")
 
-        async with push_inject_scope(request=Request(scope), app=conn.scope.get("app")):
-            try:
-                actor = await resolve(self.chain.optional)
-            except (HTTPException, DependencyResolutionError):
-                logger.debug("Credential rejected; the request stays anonymous", exc_info=True)
-                return None
+        try:
+            actor = await resolve(self.chain.optional)
+        except (HTTPException, DependencyResolutionError):
+            logger.debug("Credential rejected; the request stays anonymous", exc_info=True)
+            return None
 
         if actor is None:
             return None

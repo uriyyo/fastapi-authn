@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI, Security
 from fastapi.testclient import TestClient
 
-from fastapi_authn import AuthChain
+from fastapi_authn import AuthChain, add_authn
 from fastapi_authn.oauth import (
     AccessToken,
     AuthorizationServer,
@@ -27,6 +27,8 @@ def app(server: AuthorizationServer, resource: ProtectedResource, bearer: OAuthB
     auth.authenticator(bearer)
 
     app = FastAPI()
+
+    add_authn(app)
     app.include_router(server.router)
     app.include_router(resource.router)
 
