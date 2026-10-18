@@ -160,3 +160,28 @@ async def test_introspection_verifier_handles_failures() -> None:
     )
     assert await verifier.verify_token("boom") is None
     assert await verifier.verify_token("odd") is None
+
+
+async def test_jwt_verifier_refuses_malformed_tokens_and_unknown_keys() -> None:
+    # The key lookup fails before `jwt.decode` runs; both are a refusal, never an error.
+    verifier = JWTVerifier(jwks_url="https://example.invalid/jwks.json")
+    assert await verifier.verify_token("garbage") is None
+    assert await verifier.verify_token("eyJhbGciOiJSUzI1NiJ9.e30.sig") is None
+
+
+async def test_introspection_verifier_bounds_its_cache() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"active": False})
+
+    verifier = IntrospectionVerifier(
+        endpoint="https://as/introspect",
+        client_id="rs",
+        client_secret="pw",
+        http_client=mock_client(handler),
+        cache_size=3,
+    )
+
+    for n in range(10):
+        await verifier.verify_token(f"t{n}")
+
+    assert len(verifier._cache) == 3

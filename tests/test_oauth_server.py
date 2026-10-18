@@ -1,112 +1,21 @@
 import base64
-from typing import Annotated, Any
+from typing import Any
 
 import pytest
-from fastapi import FastAPI, Security
 from fastapi.testclient import TestClient
 
-from fastapi_authn import AuthChain, add_authn
 from fastapi_authn.oauth import (
     AccessToken,
     AuthorizationServer,
     ClientInformation,
     Denied,
     Identity,
-    OAuthBearer,
     ProtectedResource,
     StoredProvider,
 )
 from fastapi_authn.oauth.server import Transaction
 
-from .conftest import ISSUER, LOGIN_URL
-
-
-@pytest.fixture
-def app(server: AuthorizationServer, resource: ProtectedResource, bearer: OAuthBearer) -> FastAPI:
-    auth = AuthChain[AccessToken](challenge=bearer.invalid_token)
-    auth.authenticator(bearer)
-
-    app = FastAPI()
-
-    add_authn(app)
-    app.include_router(server.router)
-    app.include_router(resource.router)
-
-    @app.get("/api/me")
-    async def me(token: Annotated[AccessToken, Security(auth)]) -> dict[str, Any]:
-        return {"sub": token.subject, "client": token.client_id, "scopes": token.scopes, "claims": token.claims}
-
-    return app
-
-
-@pytest.fixture
-def client(app: FastAPI) -> TestClient:
-    return TestClient(app)
-
-
-@pytest.fixture
-def registered(client: TestClient) -> ClientInformation:
-    response = client.post(
-        "/register",
-        json={
-            "redirect_uris": ["http://app/cb"],
-            "client_name": "t",
-            "scope": "read write",
-            "token_endpoint_auth_method": "client_secret_basic",
-        },
-    )
-    assert response.status_code == 201, response.text
-    return ClientInformation.model_validate(response.json())
-
-
-def basic(client: ClientInformation) -> dict[str, str]:
-    return {
-        "Authorization": "Basic " + base64.b64encode(f"{client.client_id}:{client.client_secret}".encode()).decode()
-    }
-
-
-def authorize(client: TestClient, registered: ClientInformation, challenge: str, **params: Any) -> str:
-    """Starts the flow and answers the login page; the authorization code."""
-    response = client.get(
-        "/authorize",
-        params={
-            "client_id": registered.client_id,
-            "redirect_uri": "http://app/cb",
-            "response_type": "code",
-            "code_challenge": challenge,
-            "state": "s1",
-            "scope": "read",
-            "resource": f"{ISSUER}/api",
-            **params,
-        },
-        follow_redirects=False,
-    )
-    assert response.status_code == 302, response.text
-    assert response.headers["location"].startswith(f"{LOGIN_URL}?state=")
-    state = response.headers["location"].split("state=")[1]
-
-    callback = client.post("/oauth/callback", json={"state": state, "user": "alice"})
-    assert callback.status_code == 200, callback.text
-    location = callback.json()["redirect_url"]
-    assert location.startswith("http://app/cb?code=")
-    assert "state=s1" in location
-    return location.split("code=")[1].split("&")[0]
-
-
-def exchange(client: TestClient, registered: ClientInformation, code: str, verifier: str, **data: Any) -> Any:
-    return client.post(
-        "/token",
-        data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": "http://app/cb",
-            "client_id": registered.client_id,
-            "code_verifier": verifier,
-            **data,
-        },
-        headers=basic(registered),
-    )
-
+from .conftest import ISSUER, authorize, basic, exchange
 
 # Metadata
 
@@ -168,6 +77,8 @@ def test_public_client_gets_no_secret(client: TestClient) -> None:
         {"redirect_uris": ["http://app/cb"], "response_types": ["token"]},
         {"redirect_uris": []},
         {},
+        {"redirect_uris": ["http://app/cb#frag"]},
+        {"redirect_uris": ["http://app/cb"], "jwks": {"keys": []}, "jwks_uri": "https://app/jwks"},
     ],
 )
 def test_registration_rejects_bad_metadata(client: TestClient, metadata: dict[str, Any]) -> None:
@@ -293,7 +204,10 @@ def test_denied_login_redirects_with_access_denied(
     state = response.headers["location"].split("state=")[1]
 
     callback = client.post("/oauth/callback", json={"state": state, "deny": True})
-    assert callback.json()["redirect_url"] == "http://app/cb?error=access_denied&state=s1"
+    assert (
+        callback.json()["redirect_url"]
+        == "http://app/cb?error=access_denied&state=s1&iss=http%3A%2F%2Flocalhost%3A8000"
+    )
 
 
 def test_failed_login_redirects_with_a_description(
@@ -331,7 +245,9 @@ def test_token_rejects_wrong_verifier_secret_and_replay(
     verifier, challenge = pkce
     code = authorize(client, registered, challenge)
 
-    wrong_verifier = exchange(client, registered, code, "nope")
+    # A verifier that is not even well formed (RFC 7636 §4.1) is a bad request; a well-formed wrong one, a bad grant.
+    assert exchange(client, registered, code, "nope").json()["error"] == "invalid_request"
+    wrong_verifier = exchange(client, registered, code, "x" * 43)
     assert wrong_verifier.status_code == 400
     assert wrong_verifier.json()["error"] == "invalid_grant"
 
@@ -376,7 +292,14 @@ def test_token_rejects_unsupported_grant_and_missing_client(client: TestClient, 
 
 def test_client_secret_post(client: TestClient, pkce: tuple[str, str]) -> None:
     registered = ClientInformation.model_validate(
-        client.post("/register", json={"redirect_uris": ["http://app/cb"], "scope": "read"}).json()
+        client.post(
+            "/register",
+            json={
+                "redirect_uris": ["http://app/cb"],
+                "scope": "read",
+                "token_endpoint_auth_method": "client_secret_post",
+            },
+        ).json()
     )
     assert registered.token_endpoint_auth_method == "client_secret_post"
     verifier, challenge = pkce
@@ -511,3 +434,108 @@ def test_access_token_hook_runs_on_every_use(
     assert client.get("/api/me", headers=headers).status_code == 200
     active["alice"] = False
     assert client.get("/api/me", headers=headers).status_code == 401
+
+
+def test_token_accepts_basic_auth_without_client_id_in_the_body(
+    client: TestClient, registered: ClientInformation, pkce: tuple[str, str]
+) -> None:
+    verifier, challenge = pkce
+    code = authorize(client, registered, challenge)
+
+    response = client.post(
+        "/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "http://app/cb",
+            "code_verifier": verifier,
+        },
+        headers=basic(registered),
+    )
+    assert response.status_code == 200, response.text
+
+
+async def test_registered_client_secret_is_stored_hashed(
+    client: TestClient, registered: ClientInformation, provider: StoredProvider
+) -> None:
+    stored = await provider.get_client(registered.client_id)
+    assert stored is not None
+    assert stored.client_secret is not None
+    assert stored.client_secret != registered.client_secret
+
+
+def test_registration_defaults_to_client_secret_basic(client: TestClient) -> None:
+    response = client.post("/register", json={"redirect_uris": ["http://app/cb"]})
+    assert response.json()["token_endpoint_auth_method"] == "client_secret_basic"
+
+
+def test_authorization_responses_name_the_issuer(
+    client: TestClient, registered: ClientInformation, pkce: tuple[str, str]
+) -> None:
+    assert client.get("/.well-known/oauth-authorization-server").json()[
+        "authorization_response_iss_parameter_supported"
+    ]
+
+    response = client.get(
+        "/authorize",
+        params={
+            "client_id": registered.client_id,
+            "redirect_uri": "http://app/cb",
+            "response_type": "code",
+            "code_challenge": "short",
+        },
+        follow_redirects=False,
+    )
+    location = response.headers["location"]
+    assert "error=invalid_request" in location
+    assert f"iss={ISSUER}" in location.replace("%3A", ":").replace("%2F", "/")
+
+    _, challenge = pkce
+    state = (
+        client.get(
+            "/authorize",
+            params={
+                "client_id": registered.client_id,
+                "redirect_uri": "http://app/cb",
+                "response_type": "code",
+                "code_challenge": challenge,
+            },
+            follow_redirects=False,
+        )
+        .headers["location"]
+        .split("state=")[1]
+    )
+    location = client.post("/oauth/callback", json={"state": state, "user": "alice"}).json()["redirect_url"]
+    assert "code=" in location
+    assert f"iss={ISSUER}" in location.replace("%3A", ":").replace("%2F", "/")
+
+
+def test_repeated_parameters_are_refused(
+    client: TestClient, registered: ClientInformation, pkce: tuple[str, str]
+) -> None:
+    verifier, challenge = pkce
+    code = authorize(client, registered, challenge)
+
+    response = exchange(client, registered, code, verifier, code_verifier=[verifier, verifier])
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_request", "error_description": "Parameter 'code_verifier' is repeated"}
+
+
+def test_refresh_token_only_for_clients_registered_for_the_grant(client: TestClient, pkce: tuple[str, str]) -> None:
+    registered = ClientInformation.model_validate(
+        client.post(
+            "/register",
+            json={
+                "redirect_uris": ["http://app/cb"],
+                "scope": "read",
+                "grant_types": ["authorization_code"],
+                "token_endpoint_auth_method": "client_secret_basic",
+            },
+        ).json()
+    )
+    verifier, challenge = pkce
+    code = authorize(client, registered, challenge)
+
+    tokens = exchange(client, registered, code, verifier).json()
+    assert "access_token" in tokens
+    assert "refresh_token" not in tokens

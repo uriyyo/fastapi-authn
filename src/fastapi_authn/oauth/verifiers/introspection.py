@@ -44,6 +44,8 @@ class IntrospectionVerifier:
     client_secret: str
     http_client: httpx2.AsyncClient | None = None
     cache_ttl: timedelta | None = timedelta(seconds=60)
+    # Rejected tokens are cached too, so anyone could grow the cache without a bound.
+    cache_size: int = 1024
     _cache: dict[str, tuple[AccessToken | None, float]] = field(init=False, default_factory=dict, repr=False)
 
     async def verify_token(self, token: str) -> AccessToken | None:
@@ -62,6 +64,13 @@ class IntrospectionVerifier:
 
             if access_token is not None and access_token.expires_at is not None:
                 valid_until = min(valid_until, access_token.expires_at)
+
+            if len(self._cache) >= self.cache_size:
+                self._cache = {k: v for k, v in self._cache.items() if v[1] > time.time()}
+
+            while len(self._cache) >= self.cache_size:
+                # Insertion order: the oldest answer goes first.
+                del self._cache[next(iter(self._cache))]
 
             self._cache[key] = (access_token, valid_until)
 

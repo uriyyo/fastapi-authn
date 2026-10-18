@@ -141,9 +141,8 @@ class OIDCUpstream(OAuth2Upstream):
         if self.jwks is None:
             raise UserError("The OIDC upstream's endpoints are not discovered yet: run it through the app's lifespan")
 
-        key = await anyio.to_thread.run_sync(self.jwks.get_signing_key_from_jwt, id_token)
-
         try:
+            key = await anyio.to_thread.run_sync(self.jwks.get_signing_key_from_jwt, id_token)
             return jwt.decode(
                 id_token, key.key, algorithms=list(self.algorithms), audience=self.client_id, issuer=self.issuer
             )

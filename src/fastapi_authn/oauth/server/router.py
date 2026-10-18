@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from functools import cached_property
@@ -8,6 +8,7 @@ from typing import Any, Final
 
 from fastapi import APIRouter, Request, Response
 from fastapi.openapi.models import OAuthFlowAuthorizationCode, OAuthFlows
+from fastapi.responses import JSONResponse
 from pydantic import AnyHttpUrl
 
 from fastapi_authn._lifespan import lifespan_of
@@ -18,22 +19,34 @@ from fastapi_authn.oauth.discovery import (
     cors_middleware,
     url_path,
 )
-from fastapi_authn.oauth.models import AccessToken, AuthorizationServerMetadata, TokenVerifier
+from fastapi_authn.oauth.models import DEVICE_CODE_GRANT, AccessToken, AuthorizationServerMetadata, TokenVerifier
 from fastapi_authn.oauth.resource import as_http_url
 
 from .endpoints import (
     AuthorizationEndpoint,
     ClientAuthenticator,
+    ClientConfigurationEndpoint,
+    DeviceAuthorizationEndpoint,
+    IntrospectionEndpoint,
     RegistrationEndpoint,
     RevocationEndpoint,
     TokenEndpoint,
     metadata_response,
 )
-from .protocol import AuthorizationServerProvider, ClientRegistrationOptions, RevocationOptions
+from .protocol import (
+    AuthorizationServerProvider,
+    ClientRegistrationOptions,
+    DeviceAuthorizationOptions,
+    IntrospectionOptions,
+    RevocationOptions,
+)
 from .provider import StoredProvider
 
 __all__ = [
     "AUTHORIZATION_PATH",
+    "DEVICE_AUTHORIZATION_PATH",
+    "INTROSPECTION_PATH",
+    "JWKS_PATH",
     "REGISTRATION_PATH",
     "REVOCATION_PATH",
     "TOKEN_PATH",
@@ -45,6 +58,9 @@ AUTHORIZATION_PATH: Final = "/authorize"
 TOKEN_PATH: Final = "/token"
 REGISTRATION_PATH: Final = "/register"
 REVOCATION_PATH: Final = "/revoke"
+INTROSPECTION_PATH: Final = "/introspect"
+DEVICE_AUTHORIZATION_PATH: Final = "/device_authorization"
+JWKS_PATH: Final = "/jwks"
 
 CLIENT_AUTH_METHODS: Final = ["client_secret_post", "client_secret_basic", "none"]
 LOOPBACK_HOSTS: Final = ("localhost", "127.0.0.1", "[::1]")
@@ -69,6 +85,8 @@ class AuthorizationServer:
     service_documentation_url: AnyHttpUrl | str | None = None
     client_registration: ClientRegistrationOptions | None = None
     revocation: RevocationOptions | None = None
+    introspection: IntrospectionOptions | None = None
+    device_authorization: DeviceAuthorizationOptions | None = None
     # Fields the metadata does not set on its own, e.g. `{"ui_locales_supported": ["en"]}`.
     metadata_overrides: Mapping[str, Any] | None = None
 
@@ -94,10 +112,20 @@ class AuthorizationServer:
     def endpoint_url(self, path: str) -> AnyHttpUrl:
         return as_http_url(str(self.issuer).rstrip("/") + path)
 
+    @property
+    def jwks(self) -> dict[str, Any] | None:
+        """The JWK Set verifying the access tokens, when the provider signs them with a published key."""
+        signer = getattr(self.provider, "signer", None)
+        jwk = signer.public_jwk() if signer is not None else None
+        return {"keys": [jwk]} if jwk is not None else None
+
     @cached_property
     def metadata(self) -> AuthorizationServerMetadata:
         registration = self.client_registration or ClientRegistrationOptions()
         revocation = self.revocation or RevocationOptions()
+        introspection = self.introspection or IntrospectionOptions()
+        device = self.device_authorization or DeviceAuthorizationOptions(verification_uri="")
+        grant_types = ["authorization_code", "refresh_token"] + ([DEVICE_CODE_GRANT] if device.enabled else [])
 
         metadata = AuthorizationServerMetadata(
             issuer=self.issuer,
@@ -106,11 +134,16 @@ class AuthorizationServer:
             registration_endpoint=self.endpoint_url(REGISTRATION_PATH) if registration.enabled else None,
             revocation_endpoint=self.endpoint_url(REVOCATION_PATH) if revocation.enabled else None,
             revocation_endpoint_auth_methods_supported=list(CLIENT_AUTH_METHODS) if revocation.enabled else None,
+            introspection_endpoint=self.endpoint_url(INTROSPECTION_PATH) if introspection.enabled else None,
+            introspection_endpoint_auth_methods_supported=list(CLIENT_AUTH_METHODS) if introspection.enabled else None,
+            device_authorization_endpoint=self.endpoint_url(DEVICE_AUTHORIZATION_PATH) if device.enabled else None,
+            jwks_uri=self.endpoint_url(JWKS_PATH) if self.jwks is not None else None,
             scopes_supported=registration.valid_scopes,
             response_types_supported=["code"],
-            grant_types_supported=["authorization_code", "refresh_token"],
+            grant_types_supported=grant_types,
             token_endpoint_auth_methods_supported=list(CLIENT_AUTH_METHODS),
             code_challenge_methods_supported=["S256"],
+            authorization_response_iss_parameter_supported=True,
             service_documentation=(
                 as_http_url(self.service_documentation_url) if self.service_documentation_url is not None else None
             ),
@@ -138,40 +171,25 @@ class AuthorizationServer:
     def router(self) -> APIRouter:
         router = APIRouter()
         prefix = url_path(self.issuer)
-        clients = ClientAuthenticator(self.provider)
 
-        # Token, registration and revocation are called by clients, browser-based ones included, so they carry
-        # CORS; the authorization endpoint is navigated to.
+        # Every endpoint but the authorization one is called by clients, browser-based ones included, so they
+        # carry CORS; the authorization endpoint is navigated to.
         router.add_route(
             prefix + AUTHORIZATION_PATH,
-            AuthorizationEndpoint(self.provider).handle,
+            AuthorizationEndpoint(self.provider, issuer=str(self.issuer)).handle,
             methods=["GET", "POST"],
             name="oauth_authorize",
         )
-        router.add_route(
-            prefix + TOKEN_PATH,
-            cors_middleware(TokenEndpoint(self.provider, clients).handle, ["POST", "OPTIONS"]),
-            methods=["POST", "OPTIONS"],
-            name="oauth_token",
-        )
 
-        if self.client_registration is not None and self.client_registration.enabled:
-            router.add_route(
-                prefix + REGISTRATION_PATH,
-                cors_middleware(
-                    RegistrationEndpoint(self.provider, self.client_registration).handle, ["POST", "OPTIONS"]
-                ),
-                methods=["POST", "OPTIONS"],
-                name="oauth_register",
-            )
+        for path, handler, name, methods in self.client_endpoints():
+            router.add_route(prefix + path, cors_middleware(handler, methods), methods=methods, name=name)
 
-        if self.revocation is not None and self.revocation.enabled:
-            router.add_route(
-                prefix + REVOCATION_PATH,
-                cors_middleware(RevocationEndpoint(self.provider, clients).handle, ["POST", "OPTIONS"]),
-                methods=["POST", "OPTIONS"],
-                name="oauth_revoke",
-            )
+        if (jwks := self.jwks) is not None:
+
+            async def serve_jwks(request: Request) -> Response:
+                return JSONResponse(jwks, headers={"Cache-Control": "public, max-age=3600"})
+
+            add_well_known_route(router, prefix + JWKS_PATH, serve_jwks, name="oauth_jwks")
 
         metadata = self.metadata
 
@@ -186,6 +204,38 @@ class AuthorizationServer:
             router.include_router(self.provider.router)
 
         return router
+
+    def client_endpoints(self) -> list[tuple[str, Callable[[Request], Awaitable[Response]], str, list[str]]]:
+        """The endpoints clients call directly, as enabled: `(path, handler, route name, methods)`."""
+        clients = ClientAuthenticator(self.provider)
+        post = ["POST", "OPTIONS"]
+        endpoints = [(TOKEN_PATH, TokenEndpoint(self.provider, clients).handle, "oauth_token", post)]
+
+        if self.client_registration is not None and self.client_registration.enabled:
+            registration = RegistrationEndpoint(
+                self.provider, self.client_registration, url=str(self.endpoint_url(REGISTRATION_PATH))
+            )
+            endpoints.append((REGISTRATION_PATH, registration.handle, "oauth_register", post))
+
+            if self.client_registration.configuration_endpoint:
+                configuration = ClientConfigurationEndpoint(self.provider, registration)
+                methods = ["GET", "PUT", "DELETE", "OPTIONS"]
+                endpoints.append(
+                    (REGISTRATION_PATH + "/{client_id}", configuration.handle, "oauth_client_configuration", methods)
+                )
+
+        if self.revocation is not None and self.revocation.enabled:
+            endpoints.append((REVOCATION_PATH, RevocationEndpoint(self.provider, clients).handle, "oauth_revoke", post))
+
+        if self.introspection is not None and self.introspection.enabled:
+            introspection = IntrospectionEndpoint(self.provider, clients, self.introspection)
+            endpoints.append((INTROSPECTION_PATH, introspection.handle, "oauth_introspect", post))
+
+        if self.device_authorization is not None and self.device_authorization.enabled:
+            device = DeviceAuthorizationEndpoint(self.provider, clients, self.device_authorization)
+            endpoints.append((DEVICE_AUTHORIZATION_PATH, device.handle, "oauth_device_authorization", post))
+
+        return endpoints
 
     @property
     def verifier(self) -> TokenVerifier:

@@ -33,6 +33,13 @@ TokenErrorCode = Literal[
     "unsupported_grant_type",
     "invalid_scope",
     "invalid_target",
+    # RFC 7009 §2.2.1
+    "unsupported_token_type",
+    # RFC 8628 §3.5
+    "authorization_pending",
+    "slow_down",
+    "expired_token",
+    "access_denied",
 ]
 
 RegistrationErrorCode = Literal[

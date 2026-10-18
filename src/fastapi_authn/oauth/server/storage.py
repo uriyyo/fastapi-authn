@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import AnyUrl, BaseModel, Field
 
@@ -11,6 +11,8 @@ from fastapi_authn.oauth.types import Claims, Record
 
 __all__ = [
     "Denied",
+    "DeviceGrant",
+    "Grant",
     "Identity",
     "Namespace",
     "OAuthStorage",
@@ -26,6 +28,12 @@ class Namespace(StrEnum):
     CODES = "codes"
     ACCESS_TOKENS = "access_tokens"
     REFRESH_TOKENS = "refresh_tokens"
+    # The tokens each authorization produced, so a grant is revoked as a whole.
+    GRANTS = "grants"
+    # Codes already exchanged: a replay revokes the grant (RFC 6749 §4.1.2).
+    USED_CODES = "used_codes"
+    DEVICE_CODES = "device_codes"
+    USER_CODES = "user_codes"
 
 
 class OAuthStorage(Protocol):
@@ -78,8 +86,31 @@ class Transaction(BaseModel):
 class StoredCode(BaseModel):
     code: AuthorizationCode
     identity: Identity
+    grant_id: str | None = None
 
 
 class StoredRefreshToken(BaseModel):
     token: RefreshToken
     identity: Identity
+    grant_id: str | None = None
+
+
+class Grant(BaseModel):
+    """The digests of every token issued for one authorization."""
+
+    access_tokens: list[str] = Field(default_factory=list)
+    refresh_tokens: list[str] = Field(default_factory=list)
+
+
+class DeviceGrant(BaseModel):
+    """A pending device authorization (RFC 8628), keyed by the device code's digest."""
+
+    client_id: str
+    user_code: str
+    scopes: list[str]
+    resource: str | None = None
+    expires_at: int
+    interval: int
+    status: Literal["pending", "approved", "denied"] = "pending"
+    identity: Identity | None = None
+    last_polled: float = 0

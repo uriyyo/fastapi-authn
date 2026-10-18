@@ -55,9 +55,9 @@ class JWTVerifier:
         return signing_key.key
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        key = await self.signing_key(token) if self.verify_signature else ""
-
+        # The key lookup fails on a malformed token or an unknown `kid` too, and that is a 401, not a 500.
         try:
+            key = await self.signing_key(token) if self.verify_signature else ""
             claims = jwt.decode(
                 token,
                 key,

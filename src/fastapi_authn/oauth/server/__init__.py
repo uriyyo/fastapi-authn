@@ -1,5 +1,11 @@
 from .hooks import AccessTokenHook, IdentityHook, ProviderHooks
-from .protocol import AuthorizationServerProvider, ClientRegistrationOptions, RevocationOptions
+from .protocol import (
+    AuthorizationServerProvider,
+    ClientRegistrationOptions,
+    DeviceAuthorizationOptions,
+    IntrospectionOptions,
+    RevocationOptions,
+)
 from .provider import StoredProvider
 from .router import AuthorizationServer, ProviderVerifier
 from .storage import Denied, Identity, Namespace, OAuthStorage, StoredCode, StoredRefreshToken, Transaction
@@ -11,8 +17,10 @@ __all__ = [
     "AuthorizationServerProvider",
     "ClientRegistrationOptions",
     "Denied",
+    "DeviceAuthorizationOptions",
     "Identity",
     "IdentityHook",
+    "IntrospectionOptions",
     "Namespace",
     "OAuthStorage",
     "ProviderHooks",

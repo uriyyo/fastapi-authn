@@ -71,3 +71,13 @@ def test_openapi_scheme_is_http_bearer_or_oauth2(verifier_of: Callable[..., Toke
         app_with(OAuthBearer(verifier=verifier_of({}), flows=flows, scheme_name="OAuth")).get("/openapi.json").json()
     )
     assert oauth["components"]["securitySchemes"]["OAuth"]["type"] == "oauth2"
+
+
+def test_insufficient_scope_is_a_403_naming_the_scope(verifier_of: Callable[..., TokenVerifier]) -> None:
+    bearer = OAuthBearer(verifier=verifier_of({}))
+    error = bearer.insufficient_scope(["read", "write"])
+    assert error.status_code == 403
+    assert error.headers["WWW-Authenticate"] == (
+        'Bearer error="insufficient_scope", error_description="The token does not carry the required scope", '
+        'scope="read write"'
+    )

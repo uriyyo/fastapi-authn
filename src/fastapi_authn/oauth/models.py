@@ -20,6 +20,7 @@ from .errors import AuthorizeError
 
 __all__ = [
     "DEFAULT_GRANT_TYPES",
+    "DEVICE_CODE_GRANT",
     "SCOPES",
     "AccessToken",
     "AuthorizationCode",
@@ -28,6 +29,7 @@ __all__ = [
     "BearerTokenType",
     "ClientInformation",
     "ClientMetadata",
+    "DeviceAuthorization",
     "NonEmpty",
     "OAuthToken",
     "OneOrMany",
@@ -47,6 +49,8 @@ TokenEndpointAuthMethod = Literal["none", "client_secret_post", "client_secret_b
 
 # What a client gets when it registers without saying (RFC 7591 §2).
 DEFAULT_GRANT_TYPES = ["authorization_code", "refresh_token"]
+# RFC 8628 §3.4
+DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
 # RFC 8414 issuer comparison is exact, so a URL given without a path must not gain a trailing slash.
 URL_CONFIG = ConfigDict(url_preserve_empty_path=True)
@@ -182,6 +186,19 @@ class RefreshToken(BaseModel):
     expires_at: int | None = None
     resource: str | None = None
     subject: str | None = None
+    # The authorization this token descends from; revoking it revokes every token of the grant (RFC 7009 §2.1).
+    grant_id: str | None = None
+
+
+class DeviceAuthorization(BaseModel):
+    """The device authorization endpoint's answer (RFC 8628 §3.2)."""
+
+    device_code: str
+    user_code: str
+    verification_uri: str
+    verification_uri_complete: str | None = None
+    expires_in: int
+    interval: int = 5
 
 
 class OAuthToken(BaseModel):
@@ -248,6 +265,9 @@ class ClientInformation(ClientMetadata):
     client_id_issued_at: int | None = None
     # `0` means the secret never expires.
     client_secret_expires_at: int | None = None
+    # RFC 7592: the bearer token and URL for reading, updating and deleting this registration.
+    registration_access_token: str | None = None
+    registration_client_uri: AnyHttpUrl | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -306,6 +326,8 @@ class AuthorizationServerMetadata(BaseModel):
     registration_endpoint: AnyHttpUrl | None = None
     revocation_endpoint: AnyHttpUrl | None = None
     introspection_endpoint: AnyHttpUrl | None = None
+    introspection_endpoint_auth_methods_supported: list[str] | None = None
+    device_authorization_endpoint: AnyHttpUrl | None = None
     jwks_uri: AnyHttpUrl | None = None
     scopes_supported: list[str] | None = None
     response_types_supported: list[str] = Field(default_factory=lambda: ["code"])

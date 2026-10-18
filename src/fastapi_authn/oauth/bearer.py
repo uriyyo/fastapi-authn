@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Final
@@ -40,8 +40,12 @@ class OAuthBearerError(HTTPException):
         error: BearerErrorCode,
         description: str,
         resource_metadata: AnyHttpUrl | None = None,
+        scope: Sequence[str] | None = None,
     ) -> None:
         parts = [f'error="{error}"', f'error_description="{description}"']
+
+        if scope:
+            parts.append(f'scope="{" ".join(scope)}"')
 
         if resource_metadata is not None:
             parts.append(f'resource_metadata="{resource_metadata}"')
@@ -145,4 +149,16 @@ class OAuthBearer(SecurityBase):
             error="invalid_token",
             description=description,
             resource_metadata=self.metadata_url,
+        )
+
+    def insufficient_scope(
+        self, scope: Sequence[str], description: str = "The token does not carry the required scope"
+    ) -> OAuthBearerError:
+        """The 403 for a token lacking `scope` (RFC 6750 §3.1); the application decides when to raise it."""
+        return OAuthBearerError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            error="insufficient_scope",
+            description=description,
+            resource_metadata=self.metadata_url,
+            scope=scope,
         )
