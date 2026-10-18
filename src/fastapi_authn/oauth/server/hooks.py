@@ -42,11 +42,11 @@ class ProviderHooks:
     access_token_hooks: list[AccessTokenHook] = field(default_factory=list)
 
     def identity[H: IdentityHook](self, hook: H, /) -> H:
-        self.identity_hooks.append(cast("IdentityHook", inject(new_scope=True)(hook)))
+        self.identity_hooks.append(cast("IdentityHook", inject(new_ctx=True)(hook)))
         return hook
 
     def access_token[H: AccessTokenHook](self, hook: H, /) -> H:
-        self.access_token_hooks.append(cast("AccessTokenHook", inject(new_scope=True)(hook)))
+        self.access_token_hooks.append(cast("AccessTokenHook", inject(new_ctx=True)(hook)))
         return hook
 
     async def run_identity(

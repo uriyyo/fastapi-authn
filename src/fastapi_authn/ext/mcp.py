@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Collection
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, Final
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from fastapi.security.base import SecurityBase
-from fastapi_injected import MakeDataclass
 from pydantic import BaseModel, ValidationError
 
 from fastapi_authn.oauth.bearer import OAuthBearer
@@ -41,7 +41,8 @@ class JsonRpcCall(BaseModel):
 OPENAI_APPS_CHALLENGE_PATH: Final = "/.well-known/openai-apps-challenge"
 
 
-class LazyBearer(MakeDataclass, SecurityBase, eq=False, kw_only=True):
+@dataclass(eq=False, kw_only=True)
+class LazyBearer(SecurityBase):
     """Lazy MCP authentication: anyone may connect and list tools; a protected tool asks for sign-in when called.
 
     A `tools/call` of a protected tool without a token is a 401 with the discovery challenge, which is what
@@ -57,7 +58,6 @@ class LazyBearer(MakeDataclass, SecurityBase, eq=False, kw_only=True):
     protected_methods: Collection[str] = ()
 
     def __post_init__(self) -> None:
-        super().__post_init__()
         self.model = self.bearer.model
         self.scheme_name = f"{self.bearer.scheme_name}Lazy"
 

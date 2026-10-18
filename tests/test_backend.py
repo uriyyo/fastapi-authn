@@ -1,13 +1,13 @@
 from typing import Annotated
 
 import pytest
-from fastapi import FastAPI, Request, Security, WebSocket
+from fastapi import Depends, FastAPI, Request, Security, WebSocket
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.testclient import TestClient
 from starlette.authentication import requires
 from starlette.middleware.authentication import AuthenticationMiddleware
 
-from fastapi_authn import AUTHENTICATED, ActorUser, AuthChain, ChainBackend
+from fastapi_authn import AUTHENTICATED, ActorUser, AuthChain, ChainBackend, UserError, add_authn
 
 from .conftest import User
 
@@ -23,6 +23,8 @@ def app() -> FastAPI:
         return User(credentials.credentials) if credentials.credentials != "bad" else None
 
     app = FastAPI()
+
+    add_authn(app)
     app.state.calls = calls
     app.add_middleware(AuthenticationMiddleware, backend=ChainBackend(auth, display_name=lambda u: u.name.upper()))
 
@@ -87,3 +89,59 @@ def test_actor_user_defaults_to_str() -> None:
     assert user.display_name == "User(name='a')"
     assert user.identity == user.display_name
     assert ActorUser(User("a"), display_name="A").display_name == "A"
+
+
+def test_dependency_overrides_apply_in_the_middleware() -> None:
+    auth = AuthChain[User]()
+
+    async def real() -> User | None:
+        return None
+
+    @auth.scheme(HTTPBearer())
+    async def by_token(
+        credentials: HTTPAuthorizationCredentials, user: Annotated[User | None, Depends(real)]
+    ) -> User | None:
+        return user
+
+    app = FastAPI()
+    add_authn(app)
+    app.add_middleware(AuthenticationMiddleware, backend=ChainBackend(auth))
+    app.dependency_overrides[real] = lambda: User("override")
+
+    @app.get("/anonymous")
+    async def anonymous(request: Request) -> dict[str, bool]:
+        return {"authenticated": request.user.is_authenticated}
+
+    response = TestClient(app).get("/anonymous", headers={"Authorization": "Bearer t"})
+    assert response.json() == {"authenticated": True}
+
+
+def test_add_authn_order_does_not_matter() -> None:
+    auth = AuthChain[User]()
+
+    @auth.scheme(HTTPBearer())
+    async def by_token(credentials: HTTPAuthorizationCredentials) -> User | None:
+        return User(credentials.credentials)
+
+    app = FastAPI()
+    app.add_middleware(AuthenticationMiddleware, backend=ChainBackend(auth))
+    add_authn(app)
+
+    @app.get("/anonymous")
+    async def anonymous(request: Request) -> dict[str, bool]:
+        return {"authenticated": request.user.is_authenticated}
+
+    response = TestClient(app).get("/anonymous", headers={"Authorization": "Bearer t"})
+    assert response.json() == {"authenticated": True}
+
+
+def test_unprepared_app_names_the_fix() -> None:
+    app = FastAPI()
+    app.add_middleware(AuthenticationMiddleware, backend=ChainBackend(AuthChain[User]()))
+
+    @app.get("/anonymous")
+    async def anonymous(request: Request) -> dict[str, bool]:
+        return {"authenticated": request.user.is_authenticated}
+
+    with pytest.raises(UserError, match=r"add_authn\(app\)"):
+        TestClient(app).get("/anonymous")

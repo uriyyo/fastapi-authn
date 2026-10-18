@@ -6,6 +6,7 @@ from fastapi import FastAPI, Security
 from fastapi.openapi.models import OAuthFlowAuthorizationCode, OAuthFlows
 from fastapi.testclient import TestClient
 
+from fastapi_authn import add_authn
 from fastapi_authn.oauth import AccessToken, OAuthBearer, ProtectedResource, TokenVerifier
 
 from .conftest import ISSUER
@@ -13,6 +14,7 @@ from .conftest import ISSUER
 
 def app_with(bearer: OAuthBearer) -> TestClient:
     app = FastAPI()
+    add_authn(app)
 
     @app.get("/x")
     async def x(token: Annotated[AccessToken | None, Security(bearer)]) -> str | None:

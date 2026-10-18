@@ -133,7 +133,7 @@ class StoredProvider:
         if self.upstream is not None:
             raise UserError("The provider already has an upstream")
 
-        authenticate = cast("Authenticate", inject(new_scope=True)(func))
+        authenticate = cast("Authenticate", inject(new_ctx=True)(func))
         self.upstream = IdentityUpstream(login_url=self.login_url, authenticate=authenticate)
         return func
 

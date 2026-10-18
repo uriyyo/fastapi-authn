@@ -1,3 +1,4 @@
+from .app import add_authn
 from .backend import AUTHENTICATED, ChainBackend
 from .chain import ActorUser, AuthChain, Authenticator, Challenge
 from .exceptions import MissingExtra, UserError
@@ -11,4 +12,5 @@ __all__ = [
     "Challenge",
     "MissingExtra",
     "UserError",
+    "add_authn",
 ]

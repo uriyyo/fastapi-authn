@@ -12,7 +12,7 @@ from fastapi.security import (
 )
 from fastapi.testclient import TestClient
 
-from fastapi_authn import AuthChain
+from fastapi_authn import AuthChain, UserError, add_authn
 
 from .conftest import User
 
@@ -39,6 +39,7 @@ def auth() -> AuthChain[User]:
 @pytest.fixture
 def app(auth: AuthChain[User]) -> FastAPI:
     app = FastAPI()
+    add_authn(app)
 
     @app.get("/me")
     async def me(user: Annotated[User, Security(auth)]) -> User:
@@ -93,6 +94,8 @@ def test_authenticators_run_lazily_and_stop_at_the_first_actor() -> None:
 
     app = FastAPI()
 
+    add_authn(app)
+
     @app.get("/me")
     async def me(user: Annotated[User | None, Security(auth.optional)]) -> User | None:
         return user
@@ -145,6 +148,8 @@ def test_a_verify_function_answers_none_to_pass_and_raises_to_refuse() -> None:
         return User(key)
 
     app = FastAPI()
+
+    add_authn(app)
 
     @app.get("/maybe")
     async def maybe(user: Annotated[User | None, Security(auth.optional)]) -> User | None:
@@ -223,6 +228,7 @@ def test_custom_challenge() -> None:
         challenge=lambda description: HTTPException(401, description, headers={"WWW-Authenticate": 'Bearer realm="x"'})
     )
     app = FastAPI()
+    add_authn(app)
 
     @app.get("/x")
     async def x(user: Annotated[User, Security(auth)]) -> User:
@@ -243,6 +249,8 @@ def test_plain_authenticator_with_own_dependencies() -> None:
         return User(name) if name else None
 
     app = FastAPI()
+
+    add_authn(app)
 
     @app.get("/me")
     async def me(user: Annotated[User, Security(auth)]) -> User:
@@ -274,8 +282,21 @@ def test_unparametrized_chain_works() -> None:
 
     app = FastAPI()
 
+    add_authn(app)
+
     @app.get("/x")
     async def x(actor: Annotated[Any, Security(auth)]) -> Any:
         return actor
 
     assert TestClient(app).get("/x").json() == {"k": "v"}
+
+
+def test_unprepared_app_names_the_fix(auth: AuthChain[User]) -> None:
+    app = FastAPI()
+
+    @app.get("/me")
+    async def me(user: Annotated[User, Security(auth)]) -> User:
+        return user
+
+    with pytest.raises(UserError, match=r"add_authn\(app\)"):
+        TestClient(app).get("/me", headers={"Authorization": "Bearer alice"})
