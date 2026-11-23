@@ -11,7 +11,7 @@ from fastapi import HTTPException, Security, status
 from fastapi.openapi.models import APIKey, HTTPBase, OAuth2, OpenIdConnect
 from fastapi.security.base import SecurityBase
 from fastapi_injected import InjectionContext, bind_deps, resolve
-from fastapi_injected.reflect import iter_security
+from fastapi_injected.walk import iter_security
 from starlette.authentication import BaseUser
 from starlette.requests import HTTPConnection
 from typing_extensions import ParamSpec, TypeVar
